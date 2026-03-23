@@ -4,19 +4,23 @@ OUTPUT_DIR = "results"
 if not os.path.exists(OUTPUT_DIR):
     os.makedirs(OUTPUT_DIR)
 
+SQLITE_CONFIG = {
+    "path": os.path.join(OUTPUT_DIR, "scan_results.db"),
+}
+
 # 目标配置
 # domains: 直接写要收集的目标域名列表
 # domain_file: 从文件中读取目标域名，一行一个
 TARGET_CONFIG = {
     "domains": [
-        # "example.com",
+        "peizheng.edu.cn",
     ],
     "domain_file": None,
 }
 
 # 主流程配置
 SCAN_CONFIG = {
-    "enabled_runners": ["amass"],  # 可选: amass / subfinder
+    "enabled_runners": ["amass"],  # 可选: amass / subfinder / dnsx
 }
 
 # Amass Enum 相关配置
@@ -35,4 +39,13 @@ SUBFINDER_CONFIG = {
     "threads": 50,            # 并发线程数
     "timeout": 10,            # 超时时间(秒)
     "silent": True,           # 是否开启静默模式
+}
+
+# Dnsx 存活探测配置
+DNSX_CONFIG = {
+    "path": "dnsx",           # 如果在环境变量中，直接写名字；否则写绝对路径
+    "threads": 50,            # 并发线程数
+    "silent": True,           # 是否开启静默模式
+    "resp_only": True,        # 仅输出成功解析的域名
+    "extra_args": [],         # 额外参数
 }

@@ -2,6 +2,9 @@ import argparse
 import sys
 from config import SCAN_CONFIG, TARGET_CONFIG
 from modules import build_runner, get_supported_runners
+from storage import ScanResultStore
+from summary import show_summary
+from viewer import show_alive, show_view
 
 
 def load_targets(domain=None, file_path=None):
@@ -59,6 +62,21 @@ def main():
         choices=get_supported_runners(),
         help="选择一个或多个子域名收集工具",
     )
+    parser.add_argument(
+        "-s",
+        metavar="DOMAIN",
+        help="查看指定域名在数据库中的汇总信息",
+    )
+    parser.add_argument(
+        "-v",
+        metavar="DOMAIN",
+        help="查看指定域名在数据库中的所有子域名信息",
+    )
+    parser.add_argument(
+        "-a",
+        metavar="DOMAIN",
+        help="查看指定域名在数据库中的存活目标信息",
+    )
 
     args = parser.parse_args()
 
@@ -66,6 +84,18 @@ def main():
         print("--- 当前已集成的工具模块 ---")
         for tool in get_supported_runners():
             print(f"- {tool}")
+        return
+
+    if args.s:
+        show_summary(args.s)
+        return
+
+    if args.v:
+        show_view(domain=args.v)
+        return
+
+    if args.a:
+        show_alive(args.a)
         return
 
     targets = load_targets(args.domain, args.file)
@@ -84,20 +114,35 @@ def main():
         print("[!] 未配置任何收集器，请检查 config.py 中 SCAN_CONFIG['enabled_runners']")
         sys.exit(1)
 
+    store = ScanResultStore()
     print(f"--- 任务开始，工具: {', '.join(tools)}，共 {len(targets)} 个目标 ---")
     total_found = 0
+    total_inserted = 0
     for tool in tools:
         scanner = build_runner(tool)
         tool_total = 0
+        tool_inserted = 0
         print(f"\n=== 开始执行模块: {tool} ===")
         for target in targets:
             results = scanner.run_scan(target)
-            print(f"[+] [{tool}] {target} 扫描完成，发现 {len(results)} 个子域名")
+            save_summary = store.save_results(target, tool, results)
+            print(
+                f"[+] [{tool}] {target} 扫描完成，发现 {len(results)} 个子域名，"
+                f"新增入库 {save_summary['inserted_count']} 条"
+            )
             tool_total += len(results)
+            tool_inserted += save_summary["inserted_count"]
         total_found += tool_total
-        print(f"=== 模块 {tool} 执行完成，累计发现 {tool_total} 个结果 ===")
+        total_inserted += tool_inserted
+        print(
+            f"=== 模块 {tool} 执行完成，累计发现 {tool_total} 个结果，"
+            f"新增入库 {tool_inserted} 条 ==="
+        )
 
-    print(f"--- 所有任务已完成，累计发现 {total_found} 个子域名 ---")
+    print(
+        f"--- 所有任务已完成，累计发现 {total_found} 个子域名，"
+        f"新增入库 {total_inserted} 条 ---"
+    )
 
 
 if __name__ == "__main__":
