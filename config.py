@@ -13,7 +13,7 @@ SQLITE_CONFIG = {
 # domain_file: 从文件中读取目标域名，一行一个
 TARGET_CONFIG = {
     "domains": [
-        "peizheng.edu.cn",
+        "nfl.com",
     ],
     "domain_file": None,
 }
