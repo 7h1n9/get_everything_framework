@@ -49,3 +49,17 @@ DNSX_CONFIG = {
     "resp_only": True,        # 仅输出成功解析的域名
     "extra_args": [],         # 额外参数
 }
+
+# Httpx Web 探测配置
+HTTPX_CONFIG = {
+    "path": "httpx",          # 如果在环境变量中，直接写名字；否则写绝对路径
+    "threads": 50,            # 并发线程数
+    "silent": True,           # 是否开启静默模式
+    "title": True,            # 输出页面标题
+    "status_code": True,      # 输出状态码
+    "tech_detect": False,     # 输出技术指纹
+    "follow_redirects": False,  # 跟随跳转
+    "timeout": 10,            # 单个请求超时时间(秒)
+    "process_timeout": 300,   # 整个 httpx 进程最大运行时间(秒)
+    "extra_args": [],         # 额外参数
+}

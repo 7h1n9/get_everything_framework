@@ -23,10 +23,19 @@ class BaseRunner:
     def _execute(self, cmd, domain):
         try:
             print(f"[*] 正在使用 {self.tool_name} 扫描域名: {domain} ...")
-            subprocess.run(cmd, check=True, capture_output=True, text=True)
+            subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=self.config.get("process_timeout"),
+            )
             return True
         except FileNotFoundError:
             print(f"[!] 未找到工具: {self.config['path']}，请先安装并加入环境变量")
+            return False
+        except subprocess.TimeoutExpired:
+            print(f"[!] {domain} 扫描超时，已停止 {self.tool_name} 任务")
             return False
         except subprocess.CalledProcessError as e:
             error_msg = (e.stderr or e.stdout or str(e)).strip()

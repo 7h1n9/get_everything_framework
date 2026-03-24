@@ -1,6 +1,7 @@
 import argparse
 
 from modules import get_supported_runners
+from modules.httpx import HttpxRunner
 from subdomain_collection import run_subdomain_collection
 from summary import show_summary
 from viewer import show_alive, show_view
@@ -49,6 +50,11 @@ def build_parser():
         metavar="DOMAIN",
         help="查看指定域名在数据库中的存活目标信息",
     )
+    parser.add_argument(
+        "--httpx",
+        metavar="DOMAIN",
+        help="对数据库中指定域名的子域名执行 httpx Web 探测并打印结果",
+    )
     return parser
 
 
@@ -61,6 +67,7 @@ def print_subdomain_usage_hint():
     print("- 查看汇总: python subdomain_main.py -s example.com")
     print("- 查看明细: python subdomain_main.py -v example.com")
     print("- 查看存活: python subdomain_main.py -a example.com")
+    print("- Web 探测: python subdomain_main.py --httpx example.com")
 
 
 def main(argv=None):
@@ -69,6 +76,7 @@ def main(argv=None):
     summary_domain = normalize_query_value(args.s)
     view_domain = normalize_query_value(args.v)
     alive_domain = normalize_query_value(args.a)
+    httpx_domain = normalize_query_value(args.httpx)
 
     has_scan_request = any(
         [
@@ -83,6 +91,7 @@ def main(argv=None):
             args.s is not None,
             args.v is not None,
             args.a is not None,
+            args.httpx is not None,
         ]
     )
 
@@ -94,6 +103,7 @@ def main(argv=None):
         print("--- 当前已集成的工具模块 ---")
         for tool in get_supported_runners():
             print(f"- {tool}")
+        print("- httpx (独立 Web 探测命令: --httpx DOMAIN)")
         return 0
 
     if args.s is not None and summary_domain is None:
@@ -117,13 +127,25 @@ def main(argv=None):
         show_alive(alive_domain)
         return 0
 
+    if args.httpx is not None and httpx_domain is None:
+        return 0
+
+    if httpx_domain:
+        results = HttpxRunner().run_scan(httpx_domain)
+        print(f"--- httpx 探测结果: {httpx_domain} ---")
+        if not results:
+            print("暂无结果")
+            return 0
+        for item in results:
+            print(f"- {item}")
+        return 0
+
     run_subdomain_collection(
         domain=args.domain,
         file_path=args.file,
         tools=args.tools,
     )
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
