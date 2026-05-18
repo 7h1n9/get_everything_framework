@@ -1,5 +1,6 @@
 import os
 import subprocess
+import tempfile
 
 from config import OUTPUT_DIR
 
@@ -9,6 +10,7 @@ class BaseRunner:
         self.config = config
         self.output_dir = OUTPUT_DIR
         self.tool_name = tool_name
+        self.category = config.get("category", "subdomain")
 
     def _build_output_file(self, domain):
         return os.path.join(self.output_dir, f"{domain}_{self.tool_name}.txt")
@@ -41,3 +43,42 @@ class BaseRunner:
             error_msg = (e.stderr or e.stdout or str(e)).strip()
             print(f"[!] {domain} 扫描失败: {error_msg}")
             return False
+
+    def _execute_stdout(self, cmd, domain, output_file):
+        try:
+            print(f"[*] 正在使用 {self.tool_name} 扫描目标: {domain} ...")
+            completed = subprocess.run(
+                cmd,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=self.config.get("process_timeout"),
+            )
+            with open(output_file, "w", encoding="utf-8") as f:
+                f.write(completed.stdout or "")
+            return True
+        except FileNotFoundError:
+            print(f"[!] 未找到工具: {self.config['path']}，请先安装并加入环境变量")
+            return False
+        except subprocess.TimeoutExpired:
+            print(f"[!] {domain} 扫描超时，已停止 {self.tool_name} 任务")
+            return False
+        except subprocess.CalledProcessError as e:
+            error_msg = (e.stderr or e.stdout or str(e)).strip()
+            print(f"[!] {domain} 扫描失败: {error_msg}")
+            return False
+
+    def _write_input_file(self, domain, values, suffix=None):
+        temp_file = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            suffix=suffix or f"_{domain}_{self.tool_name}_input.txt",
+            dir=OUTPUT_DIR,
+            delete=False,
+        )
+        try:
+            temp_file.write("\n".join(values))
+            temp_file.write("\n")
+        finally:
+            temp_file.close()
+        return temp_file.name

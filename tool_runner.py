@@ -36,14 +36,20 @@ def load_tools(cli_tools=None):
     supported_tools = set(get_supported_runners())
     invalid_tools = [tool for tool in tools if tool not in supported_tools]
     if invalid_tools:
-        raise ValueError(f"存在不支持的收集器: {', '.join(invalid_tools)}")
+        raise ValueError(f"存在不支持的工具: {', '.join(invalid_tools)}")
     return tools
 
 
-def run_subdomain_collection(domain=None, file_path=None, tools=None, store=None):
+def save_runner_results(store, domain, runner, results):
+    category = getattr(runner, "category", "subdomain")
+    tool_name = runner.tool_name
+    return store.save_dedicated_results(domain, tool_name, category, results)
+
+
+def run_tools(domain=None, file_path=None, tools=None, store=None):
     targets = load_targets(domain, file_path)
     if not targets:
-        print("\n[!] 未提供目标域名，且 config.py 中 TARGET_CONFIG 也为空")
+        print("\n[!] 未提供目标，且 config.py 中 TARGET_CONFIG 也为空")
         raise SystemExit(1)
 
     try:
@@ -53,7 +59,7 @@ def run_subdomain_collection(domain=None, file_path=None, tools=None, store=None
         raise SystemExit(1) from exc
 
     if not selected_tools:
-        print("[!] 未配置任何收集器，请检查 config.py 中 SCAN_CONFIG['enabled_runners']")
+        print("[!] 未配置任何工具，请检查 config.py 中 SCAN_CONFIG['enabled_runners']")
         raise SystemExit(1)
 
     store = store or ScanResultStore()
@@ -62,16 +68,17 @@ def run_subdomain_collection(domain=None, file_path=None, tools=None, store=None
     total_inserted = 0
     run_details = []
 
-    for tool in selected_tools:
-        scanner = build_runner(tool)
+    for tool_name in selected_tools:
+        runner = build_runner(tool_name)
         tool_total = 0
         tool_inserted = 0
-        print(f"\n=== 开始执行模块: {tool} ===")
+        print(f"\n=== 开始执行工具: {tool_name} ===")
+
         for target in targets:
-            results = scanner.run_scan(target)
-            save_summary = store.save_results(target, tool, results)
+            results = runner.run_scan(target)
+            save_summary = save_runner_results(store, target, runner, results)
             print(
-                f"[+] [{tool}] {target} 扫描完成，发现 {len(results)} 个子域名，"
+                f"[+] [{tool_name}] {target} 执行完成，发现 {len(results)} 条结果，"
                 f"新增入库 {save_summary['inserted_count']} 条"
             )
             tool_total += len(results)
@@ -79,7 +86,8 @@ def run_subdomain_collection(domain=None, file_path=None, tools=None, store=None
             run_details.append(
                 {
                     "domain": target,
-                    "tool_name": tool,
+                    "tool_name": tool_name,
+                    "category": getattr(runner, "category", "subdomain"),
                     "found_count": len(results),
                     "inserted_count": save_summary["inserted_count"],
                     "run_id": save_summary["run_id"],
@@ -89,12 +97,12 @@ def run_subdomain_collection(domain=None, file_path=None, tools=None, store=None
         total_found += tool_total
         total_inserted += tool_inserted
         print(
-            f"=== 模块 {tool} 执行完成，累计发现 {tool_total} 个结果，"
+            f"=== 工具 {tool_name} 执行完成，累计发现 {tool_total} 条结果，"
             f"新增入库 {tool_inserted} 条 ==="
         )
 
     print(
-        f"--- 所有任务已完成，累计发现 {total_found} 个子域名，"
+        f"--- 所有任务已完成，累计发现 {total_found} 条结果，"
         f"新增入库 {total_inserted} 条 ---"
     )
 
@@ -104,4 +112,22 @@ def run_subdomain_collection(domain=None, file_path=None, tools=None, store=None
         "total_found": total_found,
         "total_inserted": total_inserted,
         "runs": run_details,
+    }
+
+
+def run_single_tool(tool_name, domain, store=None):
+    selected_tools = load_tools([tool_name])
+    runner = build_runner(selected_tools[0])
+    store = store or ScanResultStore()
+    results = runner.run_scan(domain)
+    save_summary = save_runner_results(store, domain, runner, results)
+
+    return {
+        "domain": domain,
+        "tool_name": tool_name,
+        "category": getattr(runner, "category", "subdomain"),
+        "found_count": len(results),
+        "inserted_count": save_summary["inserted_count"],
+        "run_id": save_summary["run_id"],
+        "results": results,
     }

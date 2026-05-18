@@ -1,15 +1,36 @@
 #工具的注册表
+from .alterx import AlterxRunner
 from .amass import AmassRunner
+from .assetfinder import AssetfinderRunner
 from .dnsx import DnsxRunner
-from .subfinder import SubfinderRunner
 from .httpx import HttpxRunner
+from .port_tools import NaabuRunner, NmapRunner
+from .shuffledns import ShufflednsRunner
+from .subfinder import SubfinderRunner
+from .url_tools import (
+    DirsearchRunner,
+    FeroxbusterRunner,
+    GospiderRunner,
+    KatanaRunner,
+    WaybackurlsRunner,
+)
 
 
 RUNNER_REGISTRY = {
+    "alterx": AlterxRunner,
     "amass": AmassRunner,
+    "assetfinder": AssetfinderRunner,
+    "dirsearch": DirsearchRunner,
     "dnsx": DnsxRunner,
+    "feroxbuster": FeroxbusterRunner,
+    "gospider": GospiderRunner,
+    "katana": KatanaRunner,
+    "naabu": NaabuRunner,
+    "nmap": NmapRunner,
+    "shuffledns": ShufflednsRunner,
     "subfinder": SubfinderRunner,
-    "httpx": HttpxRunner
+    "httpx": HttpxRunner,
+    "waybackurls": WaybackurlsRunner,
 }
 
 

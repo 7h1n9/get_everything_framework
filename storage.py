@@ -5,6 +5,80 @@ from datetime import datetime
 from config import SQLITE_CONFIG
 
 
+TOOL_DATABASES = {
+    "amass": {
+        "table": "amass_intel_results",
+        "column": "subdomain",
+        "category": "subdomain",
+    },
+    "subfinder": {
+        "table": "subfinder_results",
+        "column": "subdomain",
+        "category": "subdomain",
+    },
+    "assetfinder": {
+        "table": "assetfinder_results",
+        "column": "subdomain",
+        "category": "subdomain",
+    },
+    "shuffledns": {
+        "table": "shuffledns_results",
+        "column": "subdomain",
+        "category": "subdomain",
+    },
+    "alterx": {
+        "table": "alterx_results",
+        "column": "subdomain",
+        "category": "subdomain",
+    },
+    "gospider": {
+        "table": "gospider_results",
+        "column": "url",
+        "category": "url",
+    },
+    "dnsx": {
+        "table": "dnsx_results",
+        "column": "hostname",
+        "category": "alive",
+    },
+    "httpx": {
+        "table": "httpx_results",
+        "column": "endpoint",
+        "category": "web",
+    },
+    "naabu": {
+        "table": "naabu_results",
+        "column": "port_result",
+        "category": "port",
+    },
+    "nmap": {
+        "table": "nmap_results",
+        "column": "port_result",
+        "category": "port",
+    },
+    "feroxbuster": {
+        "table": "feroxbuster_results",
+        "column": "url",
+        "category": "url",
+    },
+    "dirsearch": {
+        "table": "dirsearch_results",
+        "column": "url",
+        "category": "url",
+    },
+    "waybackurls": {
+        "table": "waybackurls_results",
+        "column": "url",
+        "category": "url",
+    },
+    "katana": {
+        "table": "katana_results",
+        "column": "url",
+        "category": "url",
+    },
+}
+
+
 class ScanResultStore:
     def __init__(self, db_path=None):
         self.db_path = db_path or SQLITE_CONFIG["path"]
@@ -85,8 +159,41 @@ class ScanResultStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tool_results (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER NOT NULL,
+                    domain TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(domain, tool_name, category, value),
+                    FOREIGN KEY(run_id) REFERENCES scan_runs(id)
+                )
+                """
+            )
+            for meta in TOOL_DATABASES.values():
+                self._create_tool_table(conn, meta["table"], meta["column"])
 
-    def save_results(self, domain, tool_name, results):
+    def _create_tool_table(self, conn, table_name, result_column):
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                domain TEXT NOT NULL,
+                {result_column} TEXT NOT NULL,
+                raw_result TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(domain, {result_column}),
+                FOREIGN KEY(run_id) REFERENCES scan_runs(id)
+            )
+            """
+        )
+
+    def _normalize_results(self, results):
         normalized_results = []
         seen = set()
         for item in results:
@@ -95,19 +202,120 @@ class ScanResultStore:
                 continue
             normalized_results.append(value)
             seen.add(value)
+        return normalized_results
+
+    def _create_scan_run(self, cursor, domain, tool_name, result_count, created_at):
+        cursor.execute(
+            """
+            INSERT INTO scan_runs (domain, tool_name, result_count, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (domain, tool_name, result_count, created_at),
+        )
+        return cursor.lastrowid
+
+    def _mirror_legacy_result(self, cursor, run_id, domain, tool_name, category, value, created_at):
+        if category in {"subdomain", "alive"}:
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO subdomain_results
+                (run_id, domain, subdomain, tool_name, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (run_id, domain, value, tool_name, created_at),
+            )
+
+            if tool_name == "dnsx":
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO alive_results
+                    (run_id, domain, hostname, tool_name, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (run_id, domain, value, tool_name, created_at),
+                )
+            return
+
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO tool_results
+            (run_id, domain, tool_name, category, value, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (run_id, domain, tool_name, category, value, created_at),
+        )
+
+    def save_dedicated_results(self, domain, tool_name, category, results):
+        normalized_results = self._normalize_results(results)
+        created_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        meta = TOOL_DATABASES.get(tool_name)
+
+        if not meta:
+            return self.save_tool_results(domain, tool_name, category, normalized_results)
+
+        table_name = meta["table"]
+        result_column = meta["column"]
+        result_category = meta.get("category", category)
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            run_id = self._create_scan_run(
+                cursor,
+                domain,
+                tool_name,
+                len(normalized_results),
+                created_at,
+            )
+
+            inserted_count = 0
+            for value in normalized_results:
+                cursor.execute(
+                    f"""
+                    INSERT OR IGNORE INTO {table_name}
+                    (run_id, domain, {result_column}, raw_result, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (run_id, domain, value, value, created_at),
+                )
+                inserted_count += cursor.rowcount
+                self._mirror_legacy_result(
+                    cursor,
+                    run_id,
+                    domain,
+                    tool_name,
+                    result_category,
+                    value,
+                    created_at,
+                )
+
+            return {
+                "run_id": run_id,
+                "scan_count": len(normalized_results),
+                "inserted_count": inserted_count,
+            }
+
+    def save_results(self, domain, tool_name, results):
+        if tool_name in TOOL_DATABASES:
+            return self.save_dedicated_results(
+                domain,
+                tool_name,
+                TOOL_DATABASES[tool_name]["category"],
+                results,
+            )
+
+        normalized_results = self._normalize_results(results)
 
         created_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
 
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT INTO scan_runs (domain, tool_name, result_count, created_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (domain, tool_name, len(normalized_results), created_at),
+            run_id = self._create_scan_run(
+                cursor,
+                domain,
+                tool_name,
+                len(normalized_results),
+                created_at,
             )
-            run_id = cursor.lastrowid
 
             inserted_count = 0
             for subdomain in normalized_results:
@@ -136,6 +344,151 @@ class ScanResultStore:
                 "scan_count": len(normalized_results),
                 "inserted_count": inserted_count,
             }
+
+    def save_tool_results(self, domain, tool_name, category, results):
+        if tool_name in TOOL_DATABASES:
+            return self.save_dedicated_results(domain, tool_name, category, results)
+
+        normalized_results = self._normalize_results(results)
+
+        created_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            run_id = self._create_scan_run(
+                cursor,
+                domain,
+                tool_name,
+                len(normalized_results),
+                created_at,
+            )
+
+            inserted_count = 0
+            for value in normalized_results:
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO tool_results
+                    (run_id, domain, tool_name, category, value, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (run_id, domain, tool_name, category, value, created_at),
+                )
+                inserted_count += cursor.rowcount
+
+            return {
+                "run_id": run_id,
+                "scan_count": len(normalized_results),
+                "inserted_count": inserted_count,
+            }
+
+    def get_tool_results(self, domain=None, tool_name=None, category=None, limit=200):
+        query = [
+            "SELECT domain, tool_name, category, value, created_at",
+            "FROM tool_results",
+        ]
+        conditions = []
+        params = []
+
+        if domain:
+            conditions.append("domain = ?")
+            params.append(domain)
+
+        if tool_name:
+            conditions.append("tool_name = ?")
+            params.append(tool_name)
+
+        if category:
+            conditions.append("category = ?")
+            params.append(category)
+
+        if conditions:
+            query.append("WHERE " + " AND ".join(conditions))
+
+        query.append("ORDER BY id DESC")
+        query.append("LIMIT ?")
+        params.append(limit)
+
+        with self._get_connection() as conn:
+            cursor = conn.execute("\n".join(query), params)
+            return cursor.fetchall()
+
+    def get_tool_databases(self):
+        return [
+            {
+                "tool_name": tool_name,
+                "table": meta["table"],
+                "result_column": meta["column"],
+                "category": meta["category"],
+            }
+            for tool_name, meta in sorted(TOOL_DATABASES.items())
+        ]
+
+    def get_tool_database_overview(self):
+        overview = []
+
+        with self._get_connection() as conn:
+            for tool_name, meta in sorted(TOOL_DATABASES.items()):
+                table_name = meta["table"]
+                result_column = meta["column"]
+                cursor = conn.execute(
+                    f"""
+                    SELECT
+                        COUNT(*) AS total_count,
+                        COUNT(DISTINCT domain) AS domain_count,
+                        MAX(created_at) AS last_scan_at
+                    FROM {table_name}
+                    """
+                )
+                total_count, domain_count, last_scan_at = cursor.fetchone()
+                overview.append(
+                    {
+                        "tool_name": tool_name,
+                        "table": table_name,
+                        "category": meta["category"],
+                        "result_column": result_column,
+                        "total_count": total_count or 0,
+                        "domain_count": domain_count or 0,
+                        "last_scan_at": last_scan_at,
+                    }
+                )
+
+        return overview
+
+    def get_dedicated_results(self, tool_name, domain=None, limit=200):
+        meta = TOOL_DATABASES.get(tool_name)
+        if not meta:
+            raise ValueError(f"不支持的工具数据库: {tool_name}")
+
+        table_name = meta["table"]
+        result_column = meta["column"]
+        query = [
+            f"SELECT domain, {result_column}, raw_result, created_at",
+            f"FROM {table_name}",
+        ]
+        params = []
+
+        if domain:
+            query.append("WHERE domain = ?")
+            params.append(domain)
+
+        query.append("ORDER BY id DESC")
+        query.append("LIMIT ?")
+        params.append(limit)
+
+        with self._get_connection() as conn:
+            cursor = conn.execute("\n".join(query), params)
+            return [
+                {
+                    "domain": row_domain,
+                    "tool_name": tool_name,
+                    "table": table_name,
+                    "result_column": result_column,
+                    "value": value,
+                    "raw_result": raw_result,
+                    "created_at": created_at,
+                }
+                for row_domain, value, raw_result, created_at in cursor.fetchall()
+            ]
 
     def get_alive_results(self, domain=None):
         query = [

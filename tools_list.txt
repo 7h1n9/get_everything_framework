@@ -1,0 +1,28 @@
+# 资产收集模块
+1. amass
+
+# 子域名收集模块
+## 子域名抓取
+1. subfinder
+## 子域名爆破
+2. shuffleDNS
+3. alterx
+## 子域名爬取
+1.gospider
+## 子域名验证
+1. dnsx
+## 子域名扫描
+1. httpx
+2. naabu
+3. nmap
+
+
+# 网页分析模块
+## 内容发现
+1. feroxbuster
+2. dirsearch   
+3. waybackurls
+## 爬虫
+1. gospider
+2. katana
+

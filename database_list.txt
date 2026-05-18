@@ -1,0 +1,14 @@
+# Database List
+amass -intel database
+subfinder database
+shuffleDNS database
+alterx database
+gospider database
+dnsx database
+httpx database
+naabu database
+nmap database
+feroxbuster database
+dirsearch database
+waybackurls database
+katana database
