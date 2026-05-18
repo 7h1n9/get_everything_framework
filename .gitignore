@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+.env
+agent/.env
+
+results/*.db
+results/*.txt

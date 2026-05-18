@@ -1,9 +1,9 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Subfinder 扫描面板</title>
+    <title>子域名扫描面板</title>
     <style>
         :root {
             --bg: #f3efe6;
@@ -19,9 +19,7 @@
             --shadow: 0 20px 50px rgba(120, 53, 15, 0.12);
         }
 
-        * {
-            box-sizing: border-box;
-        }
+        * { box-sizing: border-box; }
 
         body {
             margin: 0;
@@ -87,28 +85,14 @@
             backdrop-filter: blur(10px);
         }
 
-        .panel {
-            padding: 22px;
-        }
+        .panel { padding: 22px; }
+        .table-panel { overflow: hidden; margin-top: 20px; }
 
-        .table-panel {
-            overflow: hidden;
-            margin-top: 20px;
-        }
+        h2 { margin: 0 0 14px; font-size: 20px; }
 
-        h2 {
-            margin: 0 0 14px;
-            font-size: 20px;
-        }
+        form { display: grid; gap: 14px; }
 
-        form {
-            display: grid;
-            gap: 14px;
-        }
-
-        label {
-            font-weight: 600;
-        }
+        label { font-weight: 600; }
 
         input[type="text"] {
             width: 100%;
@@ -144,15 +128,8 @@
             line-height: 1.6;
         }
 
-        .notice.success {
-            background: rgba(22, 101, 52, 0.1);
-            color: var(--success);
-        }
-
-        .notice.error {
-            background: rgba(185, 28, 28, 0.08);
-            color: var(--error);
-        }
+        .notice.success { background: rgba(22, 101, 52, 0.1); color: var(--success); }
+        .notice.error { background: rgba(185, 28, 28, 0.08); color: var(--error); }
 
         .stats {
             display: grid;
@@ -167,21 +144,10 @@
             border: 1px solid rgba(148, 163, 184, 0.2);
         }
 
-        .stat strong {
-            display: block;
-            font-size: 28px;
-            color: var(--accent-deep);
-        }
+        .stat strong { display: block; font-size: 28px; color: var(--accent-deep); }
+        .stat span { color: var(--muted); font-size: 13px; }
 
-        .stat span {
-            color: var(--muted);
-            font-size: 13px;
-        }
-
-        .meta-list {
-            display: grid;
-            gap: 10px;
-        }
+        .meta-list { display: grid; gap: 10px; }
 
         .meta-item {
             display: flex;
@@ -194,18 +160,14 @@
             font-size: 14px;
         }
 
-        .meta-item span:last-child {
-            color: var(--muted);
-            text-align: right;
-        }
+        .meta-item span:last-child { color: var(--muted); text-align: right; }
 
         table {
             width: 100%;
             border-collapse: collapse;
         }
 
-        th,
-        td {
+        th, td {
             padding: 14px 18px;
             border-bottom: 1px solid var(--line);
             text-align: left;
@@ -220,13 +182,46 @@
             color: var(--accent-deep);
         }
 
-        tr:last-child td {
-            border-bottom: 0;
+        tr:last-child td { border-bottom: 0; }
+        .empty { padding: 24px 18px; color: var(--muted); }
+
+        .chat-history {
+            max-height: 340px;
+            overflow: auto;
+            display: grid;
+            gap: 10px;
+            margin-bottom: 12px;
+            padding-right: 6px;
         }
 
-        .empty {
-            padding: 24px 18px;
-            color: var(--muted);
+        .chat-msg {
+            border: 1px solid rgba(148, 163, 184, 0.25);
+            border-radius: 12px;
+            padding: 10px 12px;
+            background: rgba(255, 255, 255, 0.75);
+            white-space: pre-wrap;
+            line-height: 1.6;
+            font-size: 14px;
+        }
+
+        .chat-msg.user { border-left: 4px solid #0f766e; }
+        .chat-msg.assistant { border-left: 4px solid #b45309; }
+        .step-log {
+            margin-top: 14px;
+            max-height: 220px;
+            overflow: auto;
+            display: grid;
+            gap: 8px;
+            padding-right: 6px;
+        }
+        .step-item {
+            border: 1px solid rgba(148, 163, 184, 0.25);
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.75);
+            padding: 10px 12px;
+            font-size: 13px;
+            line-height: 1.5;
+            white-space: pre-wrap;
         }
 
         code {
@@ -237,38 +232,26 @@
         }
 
         @media (max-width: 720px) {
-            .page {
-                padding: 24px 14px 40px;
-            }
-
-            .hero,
-            .panel {
-                padding: 18px;
-            }
-
-            .meta-item {
-                flex-direction: column;
-            }
-
-            th,
-            td {
-                padding: 12px 14px;
-            }
+            .page { padding: 24px 14px 40px; }
+            .hero, .panel { padding: 18px; }
+            .meta-item { flex-direction: column; }
+            th, td { padding: 12px 14px; }
         }
     </style>
 </head>
 <body>
     <main class="page">
         <section class="hero">
-            <p class="eyebrow">Flask + Subfinder</p>
-            <h1>子域名扫描面板</h1>
-            <p>输入目标域名后，点击按钮就会调用 <code>subfinder</code> 执行扫描。扫描结束后，页面会直接读取 SQLite 数据库，把当前域名的结果展示出来。</p>
+            <p class="eyebrow">Flask + Subfinder + Agent</p>
+            <h1>子域名扫描与对话助手</h1>
+            <p>你可以继续用原来的输入框执行 <code>subfinder</code> 扫描，也可以在 Agent 对话框里用自然语言下达指令（扫描、汇总、查看结果、httpx）。</p>
         </section>
 
         <section class="panel-grid">
             <article class="panel">
                 <h2>开始扫描</h2>
                 <form method="post">
+                    <input type="hidden" name="action" value="scan">
                     <div>
                         <label for="domain">目标域名</label>
                         <input id="domain" name="domain" type="text" placeholder="例如: example.com" value="{{ current_domain }}" required>
@@ -313,19 +296,49 @@
 
         <section class="panel-grid">
             <article class="panel">
-                <h2>最近扫描</h2>
-                {% if summary.recent_runs %}
-                <div class="meta-list">
-                    {% for domain, tool_name, result_count, created_at in summary.recent_runs %}
-                    <div class="meta-item">
-                        <span><strong>{{ domain }}</strong> · {{ tool_name }}</span>
-                        <span>{{ result_count }} 条 · {{ created_at }}</span>
-                    </div>
-                    {% endfor %}
+                <h2>Agent 对话</h2>
+                <div class="chat-history">
+                    {% if agent_history %}
+                        {% for item in agent_history %}
+                        <div class="chat-msg {{ item.role }}">
+                            <strong>{{ "你" if item.role == "user" else "Agent" }}:</strong>
+                            {{ item.content }}
+                        </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="empty">暂无对话。可输入“扫描 example.com 使用 subfinder”开始。</div>
+                    {% endif %}
                 </div>
-                {% else %}
-                <p class="empty">当前还没有扫描记录。</p>
+
+                <form method="post">
+                    <input type="hidden" name="action" value="chat">
+                    <div>
+                        <label for="agent_message">对话输入</label>
+                        <input id="agent_message" name="agent_message" type="text" placeholder="例如：查看 example.com 的子域名" required>
+                    </div>
+                    <button type="submit">发送给 Agent</button>
+                </form>
+
+                {% if chat_error %}
+                <div class="notice error" style="margin-top: 16px;">
+                    {{ chat_error }}
+                </div>
                 {% endif %}
+
+                <h2 style="margin-top: 16px; font-size: 16px;">工具调用日志</h2>
+                <div class="step-log">
+                    {% if agent_steps %}
+                        {% for step in agent_steps|reverse %}
+                        <div class="step-item">
+                            <strong>{{ step.ts }} | {{ step.action }}</strong>
+                            <div>args: {{ step.args }}</div>
+                            <div>result: {{ step.result }}</div>
+                        </div>
+                        {% endfor %}
+                    {% else %}
+                        <div class="empty">暂无工具调用日志。</div>
+                    {% endif %}
+                </div>
             </article>
 
             <article class="panel">
