@@ -129,23 +129,19 @@ install_system_dependencies() {
 
   if exists apt-get; then
     run_root apt-get update
-    run_root apt-get install -y python3 python3-pip golang-go git nmap curl ca-certificates
+    run_root apt-get install -y python3 python3-pip golang-go git nmap curl wget unzip ca-certificates
   elif exists dnf; then
-    run_root dnf install -y python3 python3-pip golang git nmap curl ca-certificates
+    run_root dnf install -y python3 python3-pip golang git nmap curl wget unzip ca-certificates
   elif exists yum; then
-    run_root yum install -y python3 python3-pip golang git nmap curl ca-certificates
+    run_root yum install -y python3 python3-pip golang git nmap curl wget unzip ca-certificates
   elif exists pacman; then
-    run_root pacman -Sy --needed --noconfirm python python-pip go git nmap curl ca-certificates
+    run_root pacman -Sy --needed --noconfirm python python-pip go git nmap curl wget unzip ca-certificates
   elif exists zypper; then
-    run_root zypper install -y python3 python3-pip go git nmap curl ca-certificates
+    run_root zypper install -y python3 python3-pip go git nmap curl wget unzip ca-certificates
   elif exists apk; then
-    run_root apk add --no-cache python3 py3-pip go git nmap curl ca-certificates
+    run_root apk add --no-cache python3 py3-pip go git nmap curl wget unzip ca-certificates
   else
-    echo "[!] Unsupported package manager. Install python3, pip, go, git, nmap, and curl manually."
-  fi
-
-  if exists snap && ! exists amass; then
-    run_root snap install amass
+    echo "[!] Unsupported package manager. Install python3, pip, go, git, nmap, curl, wget, and unzip manually."
   fi
 
   add_go_path
@@ -176,19 +172,63 @@ install_amass() {
     return
   fi
 
-  if exists apt-get; then
-    run_root apt-get install -y amass || true
-  elif exists dnf; then
-    run_root dnf install -y amass || true
-  elif exists pacman; then
-    run_root pacman -S --needed --noconfirm amass || true
-  elif exists snap; then
-    run_root snap install amass || true
+  if ! exists wget; then
+    echo "[!] wget is required to install amass from GitHub."
+    return
   fi
 
-  if ! exists amass; then
-    echo "[!] amass was not installed by the OS package manager."
-    echo "    Install it from https://github.com/owasp-amass/amass/releases or enable snap and rerun."
+  if ! exists unzip; then
+    echo "[!] unzip is required to install amass from GitHub."
+    return
+  fi
+
+  local amass_url="https://github.com/owasp-amass/amass/releases/download/v4.2.0/amass_Linux_amd64.zip"
+  local amass_zip="$LOCAL_TOOLS_DIR/amass_Linux_amd64.zip"
+  local amass_extract_dir="$LOCAL_TOOLS_DIR/amass"
+  local amass_bin="$amass_extract_dir/amass"
+
+  run mkdir -p "$LOCAL_TOOLS_DIR"
+  run wget "$amass_url" -O "$amass_zip"
+  run mkdir -p "$amass_extract_dir"
+  run unzip -o "$amass_zip" -d "$amass_extract_dir"
+
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[i] Dry run: skip amass binary lookup and version check."
+    return
+  fi
+
+  local found_bin=""
+  if [[ -f "$amass_bin" ]]; then
+    found_bin="$amass_bin"
+  else
+    found_bin="$(find "$amass_extract_dir" -type f -name amass 2>/dev/null | head -n 1 || true)"
+  fi
+
+  if [[ -z "$found_bin" ]]; then
+    echo "[!] amass binary was not found after extracting: $amass_extract_dir"
+    return
+  fi
+
+  run chmod +x "$found_bin"
+  if [[ "$found_bin" != "$amass_bin" ]]; then
+    run cp "$found_bin" "$amass_bin"
+  fi
+
+  export PATH="$PATH:$amass_extract_dir"
+
+  local profile="$HOME/.profile"
+  local line="export PATH=\"\$PATH:$amass_extract_dir\""
+  if [[ -f "$profile" ]] && ! grep -Fq "$line" "$profile"; then
+    echo "[*] Add amass to $profile"
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+      printf '\n# get_everything_framework tools\n%s\n' "$line" >> "$profile"
+    fi
+  fi
+
+  if "$amass_bin" -version >/dev/null 2>&1; then
+    "$amass_bin" -version
+  else
+    echo "[+] amass installed at: $amass_bin"
   fi
 }
 

@@ -39,9 +39,10 @@ powershell -ExecutionPolicy Bypass -File scripts/install_windows.ps1 -WithOption
 说明：
 
 - Windows 脚本优先使用 `winget` 安装 `Python`、`Go`、`Git`、`Nmap` 和 `Amass`。
-- Linux 脚本会自动识别 `apt`、`dnf`、`yum`、`pacman`、`zypper` 或 `apk`，安装 `python3`、`pip`、`go`、`git`、`nmap` 等基础工具。
+- Linux 脚本会自动识别 `apt`、`dnf`、`yum`、`pacman`、`zypper` 或 `apk`，安装 `python3`、`pip`、`go`、`git`、`nmap`、`wget`、`unzip` 等基础工具。
 - `subfinder`、`dnsx`、`httpx`、`naabu`、`katana`、`alterx`、`shuffledns`、`assetfinder`、`gospider`、`waybackurls` 等会通过 `go install` 安装。
 - `feroxbuster` 和 `dirsearch` 属于可选工具，使用 `--with-optional` 或 `-WithOptional` 安装；Windows 下 `feroxbuster` 会从官方 GitHub Release 下载 `x86_64-windows-feroxbuster.exe.zip`。
+- Linux 下 `amass` 不依赖 `snap`，会直接从 GitHub Release 下载 `amass_Linux_amd64.zip`。
 - 如果安装后命令找不到，请重开终端；脚本会把 Go 的 bin 目录加入当前会话，并尽量写入用户 PATH。
 
 
