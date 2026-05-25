@@ -31,14 +31,13 @@ class HttpxRunner(BaseRunner):
             temp_file.close()
         return temp_file.name
 
-    def run_scan(self, domain):
-        candidates = self._load_candidates(domain)
-        if not candidates:
-            print(f"[!] 数据库中未找到 {domain} 的子域名记录，无法执行 httpx 探测")
-            return []
+    def run_scan(self, domain, candidates=None):
+        targets = list(dict.fromkeys(candidates or self._load_candidates(domain)))
+        if not targets:
+            raise RuntimeError(f"没有可供 httpx 探测的目标: {domain}")
 
         output_file = self._build_output_file(domain)
-        input_file = self._write_input_file(domain, candidates)
+        input_file = self._write_input_file(domain, targets)
         cmd = [
             self.config["path"],
             "-l",
@@ -72,7 +71,7 @@ class HttpxRunner(BaseRunner):
 
         try:
             if not self._execute(cmd, domain):
-                return []
+                raise RuntimeError("httpx 扫描失败，请检查 httpx 可执行文件和当前 PATH。")
             return self._read_results(output_file)
         finally:
             if os.path.exists(input_file):

@@ -66,7 +66,7 @@ DNSX_CONFIG = {
 
 # Httpx Web 探测配置
 HTTPX_CONFIG = {
-    "path": "httpx",          # 如果在环境变量中，直接写名字；否则写绝对路径
+    "path": os.getenv("HTTPX_PATH", "http-x"),  # 默认使用安装脚本创建的别名，避免命中 Python 的 httpx.exe
     "category": "web",
     "threads": 50,            # 并发线程数
     "silent": True,           # 是否开启静默模式

@@ -26,7 +26,7 @@ GO_TOOLS=(
 )
 
 EXPECTED_TOOLS=(
-  alterx amass assetfinder dirsearch dnsx feroxbuster gospider httpx
+  alterx amass assetfinder dirsearch dnsx feroxbuster gospider httpx http-x
   katana naabu nmap shuffledns subfinder waybackurls
 )
 
@@ -121,6 +121,61 @@ add_go_path() {
       fi
     fi
   fi
+}
+
+resolve_tool_path() {
+  command -v "$1" 2>/dev/null || true
+}
+
+ensure_httpx_alias() {
+  local bin_path target alias_path
+  bin_path="$(go_bin)"
+  target="$bin_path/httpx"
+  alias_path="$bin_path/http-x"
+
+  if [[ ! -f "$target" ]]; then
+    echo "[!] ProjectDiscovery httpx was not found at: $target"
+    return 1
+  fi
+
+  echo "[*] Create http-x alias: $alias_path"
+  if [[ "$DRY_RUN" -eq 0 ]]; then
+    cat >"$alias_path" <<EOF
+#!/usr/bin/env bash
+"$target" "\$@"
+EOF
+    chmod +x "$alias_path"
+  fi
+
+  export PATH="$PATH:$bin_path"
+}
+
+go_tool_path() {
+  local tool_name="$1"
+  echo "$(go_bin)/$tool_name"
+}
+
+test_httpx_installation() {
+  local bin_path expected_httpx expected_alias resolved_httpx resolved_alias
+  bin_path="$(go_bin)"
+  expected_httpx="$bin_path/httpx"
+  expected_alias="$bin_path/http-x"
+  resolved_httpx="$(resolve_tool_path httpx)"
+  resolved_alias="$(resolve_tool_path http-x)"
+
+  echo "[i] Expected ProjectDiscovery httpx: $expected_httpx"
+  echo "[i] which httpx => ${resolved_httpx:-<missing>}"
+  echo "[i] which http-x => ${resolved_alias:-<missing>}"
+
+  [[ -f "$expected_httpx" ]] || { echo "[!] ProjectDiscovery httpx is missing."; return 1; }
+  [[ -f "$expected_alias" ]] || { echo "[!] http-x alias is missing."; return 1; }
+  [[ "$resolved_alias" == "$expected_alias" ]] || { echo "[!] http-x does not resolve to the expected alias path."; return 1; }
+
+  if [[ -n "$resolved_httpx" && "$resolved_httpx" != "$expected_httpx" ]]; then
+    echo "[!] httpx resolves to another executable. The project will use http-x instead."
+  fi
+
+  echo "[ok] ProjectDiscovery httpx alias is ready"
 }
 
 install_system_dependencies() {
@@ -246,12 +301,28 @@ install_go_tools() {
   for entry in "${GO_TOOLS[@]}"; do
     tool="${entry%%=*}"
     module="${entry#*=}"
+    if [[ "$tool" == "httpx" ]]; then
+      local expected_httpx
+      expected_httpx="$(go_tool_path httpx)"
+      if [[ -f "$expected_httpx" ]]; then
+        echo "[=] httpx already installed in Go bin: $expected_httpx"
+        continue
+      fi
+
+      echo "[*] Installing ProjectDiscovery httpx into Go bin"
+      run go install "$module"
+      continue
+    fi
+
     if exists "$tool"; then
       echo "[=] $tool already exists in PATH"
       continue
     fi
     run go install "$module"
   done
+
+  ensure_httpx_alias || true
+  test_httpx_installation || true
 
   install_amass
 }
@@ -319,6 +390,8 @@ verify_environment() {
       echo "[--] $tool not found"
     fi
   done
+
+  test_httpx_installation || true
 }
 
 while [[ $# -gt 0 ]]; do

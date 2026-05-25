@@ -35,7 +35,7 @@ $GoTools = [ordered]@{
 
 $ExpectedTools = @(
     "alterx", "amass", "assetfinder", "dirsearch", "dnsx", "feroxbuster",
-    "gospider", "httpx", "katana", "naabu", "nmap", "shuffledns",
+    "gospider", "httpx", "http-x", "katana", "naabu", "nmap", "shuffledns",
     "subfinder", "waybackurls"
 )
 
@@ -102,6 +102,73 @@ function Update-ProcessPathFromRegistry {
     $machinePath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
     $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
     [Environment]::SetEnvironmentVariable("PATH", "$machinePath;$userPath", "Process")
+}
+
+function Resolve-ToolPath {
+    param([string]$Name)
+    $cmd = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($cmd) {
+        return $cmd.Source
+    }
+    return $null
+}
+
+function Ensure-HttpxAlias {
+    $goBin = Get-GoBin
+    $target = Join-Path $goBin "httpx.exe"
+    $aliasPath = Join-Path $goBin "http-x.cmd"
+
+    if (-not (Test-Path $target)) {
+        Write-Host "[!] ProjectDiscovery httpx.exe not found at: $target"
+        return
+    }
+
+    Write-Host "[*] Create http-x alias: $aliasPath"
+    if (-not $DryRun) {
+        @(
+            "@echo off",
+            "`"$target`" %*"
+        ) | Set-Content -Path $aliasPath -Encoding ASCII
+    }
+
+    Add-UserPath $goBin
+    Update-ProcessPathFromRegistry
+}
+
+function Get-GoToolExecutablePath {
+    param([string]$ToolName)
+    return Join-Path (Get-GoBin) ($ToolName + ".exe")
+}
+
+function Test-HttpxInstallation {
+    $goBin = Get-GoBin
+    $expectedHttpx = Join-Path $goBin "httpx.exe"
+    $expectedAlias = Join-Path $goBin "http-x.cmd"
+    $resolvedHttpx = Resolve-ToolPath "httpx"
+    $resolvedAlias = Resolve-ToolPath "http-x"
+
+    Write-Host "[i] Expected ProjectDiscovery httpx: $expectedHttpx"
+    Write-Host "[i] where httpx => $resolvedHttpx"
+    Write-Host "[i] where http-x => $resolvedAlias"
+
+    if (-not (Test-Path $expectedHttpx)) {
+        Write-Host "[!] ProjectDiscovery httpx.exe is missing."
+        return $false
+    }
+    if (-not (Test-Path $expectedAlias)) {
+        Write-Host "[!] http-x alias is missing."
+        return $false
+    }
+    if ($resolvedAlias -ne $expectedAlias) {
+        Write-Host "[!] http-x does not resolve to the expected alias path."
+        return $false
+    }
+    if ($resolvedHttpx -and ($resolvedHttpx -ne $expectedHttpx)) {
+        Write-Host "[!] httpx resolves to another executable. The project will use http-x instead."
+    }
+
+    Write-Host "[ok] ProjectDiscovery httpx alias is ready"
+    return $true
 }
 
 function Install-WingetPackage {
@@ -189,12 +256,27 @@ function Install-GoTools {
 
     Add-UserPath (Get-GoBin)
     foreach ($tool in $GoTools.Keys) {
+        if ($tool -eq "httpx") {
+            $expectedHttpx = Get-GoToolExecutablePath "httpx"
+            if (Test-Path $expectedHttpx) {
+                Write-Host "[=] httpx already installed in Go bin: $expectedHttpx"
+                continue
+            }
+
+            Write-Host "[*] Installing ProjectDiscovery httpx into Go bin"
+            Invoke-CommandStep @("go", "install", $GoTools[$tool])
+            continue
+        }
+
         if (Test-Command $tool) {
             Write-Host "[=] $tool already exists in PATH"
             continue
         }
         Invoke-CommandStep @("go", "install", $GoTools[$tool])
     }
+
+    Ensure-HttpxAlias
+    Test-HttpxInstallation | Out-Null
 
     Install-Amass
 }
@@ -278,6 +360,8 @@ function Test-Environment {
             Write-Host "[--] $tool not found"
         }
     }
+
+    Test-HttpxInstallation | Out-Null
 }
 
 Write-Host "get_everything_framework Windows installer"

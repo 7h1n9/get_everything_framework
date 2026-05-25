@@ -72,7 +72,7 @@ class AgentAction:
                 "handler": self._tool_alive_results,
             },
             "httpx": {
-                "description": "执行 httpx 探测",
+                "description": "执行 httpx 探测；可直接探测传入域名本身，也可在已有子域名记录时批量探测这些子域名",
                 "params": {"domain": "string"},
                 "handler": self._tool_httpx,
             },
@@ -91,6 +91,31 @@ class AgentAction:
 
         self._append_message("user", text)
         focus_domain = self._extract_domain(text)
+        direct_tool_call = self._infer_direct_tool_call(text, focus_domain)
+
+        if direct_tool_call:
+            action = direct_tool_call["action"]
+            args = direct_tool_call.get("args", {})
+            tool_result = self._execute_tool(action, args)
+            self._record_step(action, args, tool_result)
+            if self.debug:
+                print(f"[debug] direct_tool={action} args={args} result={tool_result}")
+
+            self._append_message(
+                "system",
+                "TOOL_RESULT: " + self._safe_json(tool_result),
+            )
+
+            final_output = self._finalize_after_single_tool()
+            self._append_message("assistant", final_output)
+            if self.debug:
+                print(f"[debug] final_output={final_output}")
+            return {
+                "message": final_output,
+                "focus_domain": focus_domain,
+                "conversation_history": self.conversation_history,
+                "steps": self.steps,
+            }
 
         for step in range(1, self.max_steps + 1):
             model_output = self.client.chat(self.conversation_history)
@@ -132,12 +157,64 @@ class AgentAction:
                 "TOOL_RESULT: " + self._safe_json(tool_result),
             )
 
+            final_output = self._finalize_after_single_tool()
+            self._append_message("assistant", final_output)
+            if self.debug:
+                print(f"[debug] final_output={final_output}")
+            return {
+                "message": final_output,
+                "focus_domain": focus_domain,
+                "conversation_history": self.conversation_history,
+                "steps": self.steps,
+            }
+
         return {
             "message": "达到最大推理步数，未得到最终结论。请缩小问题范围后重试。",
             "focus_domain": focus_domain,
             "conversation_history": self.conversation_history,
             "steps": self.steps,
         }
+
+    def _infer_direct_tool_call(self, text: str, focus_domain: Optional[str]) -> Optional[Dict[str, Any]]:
+        if not focus_domain:
+            return None
+
+        lowered = text.lower()
+
+        if "子域名" in text:
+            preferred_tool = "subfinder"
+            if "amass" in lowered:
+                preferred_tool = "amass"
+            elif "dnsx" in lowered:
+                preferred_tool = "dnsx"
+            return {"action": "subdomain", "args": {"domain": focus_domain, "tool": preferred_tool}}
+
+        if "汇总" in text or "summary" in lowered:
+            return {"action": "summary", "args": {"domain": focus_domain}}
+
+        if "明细" in text or "结果" in text:
+            if "存活" in text:
+                return {"action": "alive_results", "args": {"domain": focus_domain}}
+            return {"action": "view_results", "args": {"domain": focus_domain}}
+
+        # 中文注释：只要用户给了域名、且没有明确要求“子域名/汇总/明细”，默认直接走 httpx，
+        # 这样“测试某域名存活”不会再先绕去做子域名收集。
+        return {"action": "httpx", "args": {"domain": focus_domain}}
+
+    def _finalize_after_single_tool(self) -> str:
+        messages = list(self.conversation_history)
+        messages.append(
+            {
+                "role": "system",
+                "content": (
+                    "本轮用户请求最多只能执行一个工具。"
+                    "你已经拿到了本轮唯一一次工具执行结果。"
+                    "现在必须直接给出最终答复，解释结果、失败原因或下一步建议。"
+                    "不要再输出 JSON，不要再调用任何工具。"
+                ),
+            }
+        )
+        return self.client.chat(messages)
 
     def _retry_json_if_needed(self, user_message: str, step: int) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
         if not self._should_force_json(user_message, step):
@@ -309,24 +386,22 @@ class AgentAction:
         self._validate_domain(domain)
         self._enforce_rate_limit("httpx", domain)
 
-        # 中文注释：如果没有子域名结果，先自动执行一次 subfinder
         existing_subdomains = self.store.get_results_by_domain(domain)
-        auto_prep = None
-        if not existing_subdomains:
-            prep_report = run_tools(domain=domain, tools=["subfinder"], store=self.store)
-            auto_prep = {
-                "triggered": True,
-                "tool": "subfinder",
-                "total_found": prep_report["total_found"],
-                "total_inserted": prep_report["total_inserted"],
-            }
-
-        rows = HttpxRunner().run_scan(domain)
+        runner = HttpxRunner()
+        if existing_subdomains:
+            rows = runner.run_scan(domain=domain)
+            probe_mode = "stored_subdomains"
+            target_count = len(existing_subdomains)
+        else:
+            rows = runner.run_scan(domain=domain, candidates=[domain])
+            probe_mode = "direct_domain"
+            target_count = 1
         return {
             "ok": True,
             "tool": "httpx",
             "domain": domain,
-            "auto_prep": auto_prep or {"triggered": False},
+            "probe_mode": probe_mode,
+            "target_count": target_count,
             "total": len(rows),
             "items": rows[:20],
         }
