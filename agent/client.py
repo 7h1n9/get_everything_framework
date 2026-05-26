@@ -23,12 +23,9 @@ from .errors import (
     LLMServerError,
     LLMTimeoutError,
 )
-from .model_result import ModelResult
 
 
 class LLMClient:
-    """兼容 OpenAI-like API 的模型客户端，对外保持 chat(messages) -> str。"""
-
     def __init__(
         self,
         model: Optional[str] = None,
@@ -37,25 +34,20 @@ class LLMClient:
         timeout: Optional[int] = None,
         config: Optional[LLMConfig] = None,
     ):
-        try:
-            loaded = config or load_llm_config()
-            self.config = replace(
-                loaded,
-                model_id=model or loaded.model_id,
-                api_key=api_key or loaded.api_key,
-                base_url=base_url or loaded.base_url,
-                timeout=float(timeout) if timeout is not None else loaded.timeout,
-            )
-            validate_llm_config(self.config)
-        except LLMConfigError:
-            raise
-        except Exception as exc:
-            raise LLMConfigError(str(exc))
+        loaded = config or load_llm_config()
+        self.config = replace(
+            loaded,
+            model_id=model or loaded.model_id,
+            api_key=api_key or loaded.api_key,
+            base_url=base_url or loaded.base_url,
+            timeout=float(timeout) if timeout is not None else loaded.timeout,
+        )
+        validate_llm_config(self.config)
 
         self.client = None
         self._sdk_mode = None
 
-        if OpenAI is not None and hasattr(OpenAI, "__call__"):
+        if OpenAI is not None:
             self.client = OpenAI(
                 api_key=self.config.api_key,
                 base_url=self.config.base_url,
@@ -66,15 +58,14 @@ class LLMClient:
             legacy_openai.api_key = self.config.api_key
             legacy_openai.api_base = self.config.base_url
             self._sdk_mode = "legacy_chat"
-        elif legacy_openai is not None:
-            raise LLMConfigError(
-                "当前 openai SDK 版本过旧，不支持 ChatCompletion。请安装支持聊天接口的版本，例如: "
-                "python -m pip install --user \"openai>=0.27,<1\""
-            )
         else:
-            raise LLMConfigError("未安装 openai 依赖，请先执行: pip install -r requirement.txt")
+            raise LLMConfigError("未安装可用的 openai 依赖，请先执行: pip install -r requirement.txt")
 
     def chat(self, messages: List[Dict[str, str]]) -> str:
+        """
+        对外保持旧接口：
+        输入 OpenAI messages，返回模型文本。
+        """
         return self._chat_with_retry(messages)
 
     def generate(self, prompt: str, system_prompt: str) -> str:
@@ -84,48 +75,33 @@ class LLMClient:
         ]
         return self.chat(messages)
 
-    def health_check(self) -> Dict[str, Any]:
-        try:
-            content = self.chat(
-                [
-                    {"role": "system", "content": "你是模型连通性测试助手。"},
-                    {"role": "user", "content": "请只回复 ok"},
-                ]
-            )
-            return {
-                "ok": True,
-                "model": self.config.model_id,
-                "base_url": self.config.base_url,
-                "content": content,
-            }
-        except Exception as exc:
-            return {
-                "ok": False,
-                "model": self.config.model_id,
-                "base_url": self.config.base_url,
-                "error": str(exc),
-            }
-
     def _chat_with_retry(self, messages: List[Dict[str, str]]) -> str:
-        last_error: Optional[Exception] = None
+        last_error = None
 
         for attempt in range(self.config.max_retries + 1):
             try:
                 return self._chat_once(messages)
             except (LLMTimeoutError, LLMConnectionError, LLMServerError) as exc:
                 last_error = exc
+
                 if attempt >= self.config.max_retries:
                     break
-                time.sleep(min(2 ** attempt, 8))
+
+                sleep_seconds = min(2 ** attempt, 8)
+                time.sleep(sleep_seconds)
+
             except LLMError:
                 raise
+
             except Exception as exc:
                 last_error = exc
+
                 if attempt >= self.config.max_retries:
                     break
+
                 time.sleep(min(2 ** attempt, 8))
 
-        raise LLMError("模型调用失败，已重试 {} 次：{}".format(self.config.max_retries, last_error))
+        raise LLMError(f"模型调用失败，已重试 {self.config.max_retries} 次：{last_error}")
 
     def _chat_once(self, messages: List[Dict[str, str]]) -> str:
         payload: Dict[str, Any] = {
@@ -134,7 +110,7 @@ class LLMClient:
             "temperature": self.config.temperature,
         }
 
-        if self.config.max_tokens is not None:
+        if self.config.max_tokens:
             payload["max_tokens"] = self.config.max_tokens
 
         if self.config.json_mode:
@@ -142,28 +118,19 @@ class LLMClient:
 
         try:
             response = self._create_completion(payload)
-        except LLMConfigError as exc:
-            if self.config.json_mode and payload.get("response_format") and self._should_fallback_json_mode(exc):
-                downgraded = dict(payload)
-                downgraded.pop("response_format", None)
-                response = self._create_completion(downgraded)
-            else:
-                raise
+        except Exception as exc:
+            raise self._convert_error(exc)
 
-        result = self._extract_result(response)
-        return result.content
+        return self._extract_content(response)
 
     def _create_completion(self, payload: Dict[str, Any]) -> Any:
-        try:
-            if self._sdk_mode == "legacy_chat":
-                return legacy_openai.ChatCompletion.create(**payload)
-            if self._sdk_mode == "modern":
-                return self.client.chat.completions.create(stream=False, **payload)
-            raise LLMConfigError("未识别的 openai SDK 模式")
-        except Exception as exc:
-            raise self._convert_openai_error(exc)
+        if self._sdk_mode == "modern":
+            return self.client.chat.completions.create(**payload)
+        if self._sdk_mode == "legacy_chat":
+            return legacy_openai.ChatCompletion.create(**payload)
+        raise LLMConfigError("未识别的 openai SDK 模式")
 
-    def _extract_result(self, response: Any) -> ModelResult:
+    def _extract_content(self, response: Any) -> str:
         try:
             choices = response["choices"] if isinstance(response, dict) else getattr(response, "choices", None)
             if not choices:
@@ -182,57 +149,79 @@ class LLMClient:
             if not normalized:
                 raise LLMResponseError("模型返回了空字符串")
 
-            finish_reason = (
-                first_choice.get("finish_reason")
-                if isinstance(first_choice, dict)
-                else getattr(first_choice, "finish_reason", None)
-            )
-            request_id = (
-                response.get("id")
-                if isinstance(response, dict)
-                else getattr(response, "id", None)
-            )
-            return ModelResult(
-                content=normalized,
-                finish_reason=finish_reason,
-                request_id=request_id,
-                raw_response=response,
-            )
+            return normalized
+
         except LLMResponseError:
             raise
         except Exception as exc:
-            raise LLMResponseError("模型响应结构异常：{}".format(exc))
+            raise LLMResponseError(f"模型响应结构异常：{exc}")
 
-    def _convert_openai_error(self, exc: Exception) -> LLMError:
+    def _convert_error(self, exc: Exception) -> LLMError:
+        """
+        尽量兼容不同 OpenAI-compatible 服务的异常格式。
+        """
         message = self._sanitize_error_message(str(exc))
         status_code = self._extract_status_code(exc)
-        lowered = message.lower()
-        name = exc.__class__.__name__.lower()
 
         if status_code in {401, 403}:
-            return LLMAuthError("模型认证失败：{}".format(message))
+            return LLMAuthError(f"模型认证失败：{message}")
+
         if status_code == 429:
-            return LLMRateLimitError("模型服务限流：{}".format(message))
-        if status_code == 404:
-            return LLMConfigError("模型不存在或 Base URL 错误：{}".format(message))
-        if status_code == 400:
-            return LLMConfigError("模型请求参数错误：{}".format(message))
+            return LLMRateLimitError(f"模型服务限流：{message}")
+
         if status_code in {500, 502, 503, 504}:
-            return LLMServerError("模型服务端异常：{}".format(message))
+            return LLMServerError(f"模型服务端异常：{message}")
 
-        if "timeout" in lowered or "timed out" in lowered or "apitimeouterror" in name:
-            return LLMTimeoutError("模型请求超时：{}".format(message))
-        if "connection" in lowered or "connect" in lowered or "apiconnectionerror" in name:
-            return LLMConnectionError("模型连接失败：{}".format(message))
-        if "json_object" in lowered or "response_format" in lowered:
-            return LLMConfigError("模型不支持 JSON Mode，请关闭 LLM_JSON_MODE：{}".format(message))
+        if status_code == 404:
+            return LLMConfigError(f"模型不存在或 Base URL 错误：{message}")
 
-        return LLMError("模型调用异常：{}".format(message))
+        if status_code == 400:
+            return LLMConfigError(f"模型请求参数错误：{message}")
+
+        lowered = message.lower()
+
+        if "timeout" in lowered or "timed out" in lowered:
+            return LLMTimeoutError(f"模型请求超时：{message}")
+
+        if "connection" in lowered or "connect" in lowered:
+            return LLMConnectionError(f"模型连接失败：{message}")
+
+        return LLMError(f"模型调用异常：{message}")
+
+    def health_check(self) -> Dict[str, Any]:
+        """
+        模型连通性检查。
+        暂时只给后续接口预留，不接前端。
+        """
+        try:
+            content = self.chat(
+                [
+                    {"role": "system", "content": "你是模型连通性测试助手。"},
+                    {"role": "user", "content": "请只回复 ok"},
+                ]
+            )
+
+            return {
+                "ok": True,
+                "provider": self.config.provider,
+                "model": self.config.model_id,
+                "base_url": self.config.base_url,
+                "content": content,
+            }
+
+        except Exception as exc:
+            return {
+                "ok": False,
+                "provider": self.config.provider,
+                "model": self.config.model_id,
+                "base_url": self.config.base_url,
+                "error": str(exc),
+            }
 
     def _extract_status_code(self, exc: Exception) -> Optional[int]:
-        direct = getattr(exc, "status_code", None)
-        if isinstance(direct, int):
-            return direct
+        status_code = getattr(exc, "status_code", None)
+        if isinstance(status_code, int):
+            return status_code
 
         http_status = getattr(exc, "http_status", None)
         if isinstance(http_status, int):
@@ -248,19 +237,14 @@ class LLMClient:
 
     def _sanitize_error_message(self, message: str) -> str:
         api_key = self.config.api_key or ""
-        sanitized = message
-        if api_key and api_key in sanitized:
-            sanitized = sanitized.replace(api_key, self._mask_secret(api_key))
-        return sanitized
+        if api_key and api_key in message:
+            return message.replace(api_key, self._mask_secret(api_key))
+        return message
 
     def _mask_secret(self, value: str) -> str:
         if len(value) <= 8:
             return "***"
-        return "{}***{}".format(value[:4], value[-4:])
-
-    def _should_fallback_json_mode(self, exc: Exception) -> bool:
-        message = str(exc).lower()
-        return "json mode" in message or "json_object" in message or "response_format" in message
+        return f"{value[:4]}***{value[-4:]}"
 
 
 OpenAICompatibleClient = LLMClient
