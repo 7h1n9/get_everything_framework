@@ -1,7 +1,7 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
 from .errors import LLMConfigError
 
@@ -51,44 +51,63 @@ def _load_local_env_once() -> None:
     _ENV_LOADED = True
 
 
-def _first_env(keys: Iterable[str], default: Optional[str] = None) -> Optional[str]:
-    for key in keys:
-        value = os.getenv(key)
+def _get_env(primary: str, fallback: Optional[str] = None, default: Optional[str] = None) -> str:
+    value = os.getenv(primary)
+    if value:
+        return value.strip()
+
+    if fallback:
+        value = os.getenv(fallback)
         if value:
-            return value
+            return value.strip()
+
+    return default or ""
+
+
+def _to_int(value: str, default: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _to_float(value: str, default: float) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _to_bool(value: str, default: bool = False) -> bool:
+    if value is None:
+        return default
+
+    lowered = str(value).strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+
     return default
-
-
-def _to_bool(value: Optional[str], default: bool = False) -> bool:
-    if value is None:
-        return default
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _to_optional_int(value: Optional[str], default: Optional[int]) -> Optional[int]:
-    if value is None:
-        return default
-
-    stripped = str(value).strip().lower()
-    if stripped in {"", "none", "null"}:
-        return None
-
-    return int(stripped)
 
 
 def load_llm_config() -> LLMConfig:
     _load_local_env_once()
 
+    model_id = _get_env("LLM_MODEL_ID", "MODEL_ID") or _get_env("DEEPSEEK_MODEL")
+    api_key = _get_env("LLM_API_KEY", "API_KEY") or _get_env("DEEPSEEK_API_KEY")
+    base_url = _get_env("LLM_BASE_URL", "BASE_URL") or _get_env("DEEPSEEK_API_URL")
+
     return LLMConfig(
-        provider=_first_env(["LLM_PROVIDER"], default="openai_compat") or "openai_compat",
-        model_id=_first_env(["LLM_MODEL_ID", "MODEL_ID", "DEEPSEEK_MODEL"], default="") or "",
-        api_key=_first_env(["LLM_API_KEY", "API_KEY", "DEEPSEEK_API_KEY"], default="") or "",
-        base_url=_first_env(["LLM_BASE_URL", "BASE_URL", "DEEPSEEK_API_URL"], default="") or "",
-        timeout=float(_first_env(["LLM_TIMEOUT"], default="60") or "60"),
-        max_retries=int(_first_env(["LLM_MAX_RETRIES"], default="2") or "2"),
-        temperature=float(_first_env(["LLM_TEMPERATURE"], default="0") or "0"),
-        max_tokens=_to_optional_int(_first_env(["LLM_MAX_TOKENS"], default="1024"), 1024),
-        json_mode=_to_bool(_first_env(["LLM_JSON_MODE"], default="false"), default=False),
+        provider=_get_env("LLM_PROVIDER", default="openai_compat"),
+        model_id=model_id,
+        api_key=api_key,
+        base_url=base_url,
+        timeout=_to_float(_get_env("LLM_TIMEOUT", default="60"), 60.0),
+        max_retries=_to_int(_get_env("LLM_MAX_RETRIES", default="2"), 2),
+        temperature=_to_float(_get_env("LLM_TEMPERATURE", default="0"), 0.0),
+        max_tokens=_to_int(_get_env("LLM_MAX_TOKENS", default="1024"), 1024),
+        json_mode=_to_bool(_get_env("LLM_JSON_MODE", default="false"), False),
     )
 
 
@@ -97,16 +116,15 @@ def validate_llm_config(config: LLMConfig) -> None:
 
     if not config.model_id:
         missing.append("LLM_MODEL_ID 或 MODEL_ID")
+
     if not config.api_key:
         missing.append("LLM_API_KEY 或 API_KEY")
+
     if not config.base_url:
         missing.append("LLM_BASE_URL 或 BASE_URL")
 
     if missing:
         raise LLMConfigError("模型配置不完整，缺少：" + "、".join(missing))
-
-    if config.provider != "openai_compat":
-        raise LLMConfigError("当前仅支持 LLM_PROVIDER=openai_compat")
 
     if not config.base_url.startswith(("http://", "https://")):
         raise LLMConfigError("LLM_BASE_URL / BASE_URL 必须以 http:// 或 https:// 开头")
@@ -116,6 +134,3 @@ def validate_llm_config(config: LLMConfig) -> None:
 
     if config.max_retries < 0:
         raise LLMConfigError("LLM_MAX_RETRIES 不能小于 0")
-
-    if config.max_tokens is not None and config.max_tokens <= 0:
-        raise LLMConfigError("LLM_MAX_TOKENS 必须大于 0 或留空")
