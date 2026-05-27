@@ -270,3 +270,6 @@ def api_tool_results(tool_name):
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=True)
+
+# 无论在 Windows 还是 Linux，都能完美自动适应
+file_path = os.path.join("results", "output.xlsx")
