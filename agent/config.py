@@ -113,20 +113,22 @@ def load_llm_config() -> LLMConfig:
 
 def validate_llm_config(config: LLMConfig) -> None:
     missing = []
+    provider = (config.provider or "").strip().lower()
 
     if not config.model_id:
         missing.append("LLM_MODEL_ID 或 MODEL_ID")
 
-    if not config.api_key:
+    if provider != "ollama" and not config.api_key:
         missing.append("LLM_API_KEY 或 API_KEY")
 
-    if not config.base_url:
+    providers_with_default_base_url = {"deepseek", "qwen", "dashscope", "tongyi", "ollama"}
+    if not config.base_url and provider not in providers_with_default_base_url:
         missing.append("LLM_BASE_URL 或 BASE_URL")
 
     if missing:
         raise LLMConfigError("模型配置不完整，缺少：" + "、".join(missing))
 
-    if not config.base_url.startswith(("http://", "https://")):
+    if config.base_url and not config.base_url.startswith(("http://", "https://")):
         raise LLMConfigError("LLM_BASE_URL / BASE_URL 必须以 http:// 或 https:// 开头")
 
     if config.timeout <= 0:
