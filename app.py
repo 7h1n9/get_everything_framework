@@ -1,31 +1,35 @@
 import os
+import time
 
 from flask import Flask, jsonify, render_template, request, session
+from werkzeug.utils import secure_filename
 
 from agent import handle_agent_message
+from config import ALLOWED_UPLOAD_EXTENSIONS, MAX_UPLOAD_SIZE, UPLOAD_DIR
+from exporter import export_results, gather_export_rows
 from modules import build_runner, get_supported_runners
 from storage import ScanResultStore
+from target_parser import parse_targets_file, save_normalized_targets
 from tool_runner import load_tools, run_single_tool, run_tools
 
 
 app = Flask(__name__, template_folder="web/templates")
-# 中文注释：用于保存对话历史，生产环境请使用安全随机密钥
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-secret-key")
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_SIZE
+
+
+def normalize_value(value):
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    return normalized or None
 
 
 def normalize_domain(value):
-    if value is None:
-        return None
-
-    normalized = value.strip().lower()
-    if not normalized:
-        return None
-
-    return normalized
+    return normalize_value(value)
 
 
 def _to_ui_history(history):
-    # 中文注释：过滤 system 消息，避免在页面上展示系统提示词
     if not history:
         return []
     return [item for item in history if item.get("role") in {"user", "assistant"}]
@@ -42,7 +46,6 @@ def build_page_context(
     summary = store.get_global_summary()
     domain_results = store.get_results_by_domain(domain) if domain else []
     domain_summary = store.get_domain_summary(domain) if domain else None
-
     raw_history = session.get("agent_history", [])
     raw_steps = session.get("agent_steps", [])
 
@@ -57,6 +60,9 @@ def build_page_context(
         "domain_results": domain_results,
         "agent_history": _to_ui_history(raw_history),
         "agent_steps": raw_steps,
+        "pending_plan": session.get("pending_plan"),
+        "uploaded_targets": session.get("uploaded_targets"),
+        "agent_context": session.get("agent_context"),
     }
 
 
@@ -85,11 +91,7 @@ def index():
                 scan_error = "请输入要扫描的域名。"
             else:
                 try:
-                    scan_report = run_tools(
-                        domain=domain,
-                        tools=["subfinder"],
-                        store=store,
-                    )
+                    scan_report = run_tools(domain=domain, tools=["subfinder"], store=store)
                     scan_message = f"{domain} 扫描完成。"
                 except SystemExit as exc:
                     code = exc.code if isinstance(exc.code, int) else 1
@@ -103,26 +105,31 @@ def index():
                 chat_error = "请输入聊天内容。"
             else:
                 history = session.get("agent_history", [])
+                pending_plan = session.get("pending_plan")
+                uploaded_context = session.get("uploaded_targets")
+                context_state = session.get("agent_context")
                 try:
                     agent_reply = handle_agent_message(
                         user_message,
                         store=store,
                         history=history,
+                        pending_plan=pending_plan,
+                        uploaded_context=uploaded_context,
+                        context_state=context_state,
                     )
                     if agent_reply.get("focus_domain"):
                         domain = agent_reply["focus_domain"]
 
-                    new_history = agent_reply.get("conversation_history", history)
-                    # 中文注释：保留 system + 最近若干轮消息，控制 session 体积
-                    session["agent_history"] = new_history[-40:]
+                    session["agent_history"] = agent_reply.get("conversation_history", history)[-40:]
+                    session["pending_plan"] = agent_reply.get("pending_plan")
+                    session["agent_context"] = agent_reply.get("context_state", context_state)
+
                     steps = agent_reply.get("steps", [])
                     all_steps = session.get("agent_steps", [])
                     all_steps.extend(steps)
-                    # 中文注释：只保留最近 50 条工具调用日志
                     session["agent_steps"] = all_steps[-50:]
                 except Exception as exc:
                     chat_error = f"处理失败: {exc}"
-
         else:
             scan_error = f"未知操作: {action}"
 
@@ -140,10 +147,7 @@ def index():
 @app.route("/api/tools", methods=["GET"])
 def api_tools():
     store = ScanResultStore()
-    database_by_tool = {
-        item["tool_name"]: item
-        for item in store.get_tool_databases()
-    }
+    database_by_tool = {item["tool_name"]: item for item in store.get_tool_databases()}
     return jsonify(
         {
             "tools": [
@@ -168,12 +172,13 @@ def api_run():
     payload = request.get_json(silent=True) or {}
     domain = normalize_domain(payload.get("domain"))
     tools = payload.get("tools") or payload.get("tool")
+    file_path = payload.get("file_path")
 
     if isinstance(tools, str):
         tools = [tools]
 
-    if not domain:
-        return jsonify({"error": "domain is required"}), 400
+    if not domain and not file_path:
+        return jsonify({"error": "domain or file_path is required"}), 400
 
     try:
         selected_tools = load_tools(tools)
@@ -181,7 +186,7 @@ def api_run():
         return jsonify({"error": str(exc)}), 400
 
     store = ScanResultStore()
-    report = run_tools(domain=domain, tools=selected_tools, store=store)
+    report = run_tools(domain=domain, file_path=file_path, tools=selected_tools, store=store)
     return jsonify(report)
 
 
@@ -205,8 +210,8 @@ def api_run_single_tool(tool_name):
 def api_results():
     store = ScanResultStore()
     domain = normalize_domain(request.args.get("domain"))
-    tool_name = normalize_domain(request.args.get("tool"))
-    category = normalize_domain(request.args.get("category"))
+    tool_name = normalize_value(request.args.get("tool"))
+    category = normalize_value(request.args.get("category"))
     limit = request.args.get("limit", "200")
 
     try:
@@ -214,39 +219,8 @@ def api_results():
     except ValueError:
         limit = 200
 
-    subdomain_rows = []
-    if category in {None, "", "subdomain"}:
-        subdomain_rows = [
-            {
-                "domain": row_domain,
-                "tool_name": row_tool,
-                "category": "subdomain",
-                "value": subdomain,
-                "created_at": created_at,
-            }
-            for row_domain, subdomain, row_tool, created_at in store.get_view_results(
-                domain=domain,
-                tool_name=tool_name,
-            )
-        ][:limit]
-
-    generic_rows = [
-        {
-            "domain": row_domain,
-            "tool_name": row_tool,
-            "category": row_category,
-            "value": value,
-            "created_at": created_at,
-        }
-        for row_domain, row_tool, row_category, value, created_at in store.get_tool_results(
-            domain=domain,
-            tool_name=tool_name,
-            category=category if category != "subdomain" else None,
-            limit=limit,
-        )
-    ]
-
-    return jsonify({"results": subdomain_rows + generic_rows})
+    rows = gather_export_rows(store, domain=domain, tool_name=tool_name, category=category, limit=limit)
+    return jsonify({"results": rows})
 
 
 @app.route("/api/tool/<tool_name>/results", methods=["GET"])
@@ -268,8 +242,82 @@ def api_tool_results(tool_name):
     return jsonify({"results": results})
 
 
+@app.route("/api/upload-targets", methods=["POST"])
+def api_upload_targets():
+    file = request.files.get("file")
+    if not file:
+        return jsonify({"ok": False, "error": "未上传文件"}), 400
+
+    filename = secure_filename(file.filename or "")
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+        return jsonify({"ok": False, "error": "仅支持 .txt / .csv 文件"}), 400
+
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    ts = int(time.time())
+    raw_path = os.path.join(UPLOAD_DIR, f"{ts}_{filename}")
+    normalized_path = os.path.join(UPLOAD_DIR, f"{ts}_normalized_targets.txt")
+    file.save(raw_path)
+
+    targets = parse_targets_file(raw_path)
+    save_normalized_targets(targets, normalized_path)
+
+    uploaded_context = {
+        "original_path": raw_path,
+        "file_path": normalized_path,
+        "target_count": len(targets),
+        "targets_preview": targets[:20],
+        "label": filename,
+    }
+    session["uploaded_targets"] = uploaded_context
+    session["last_uploaded_file"] = {
+        "file_path": normalized_path,
+        "target_count": len(targets),
+        "targets_preview": targets[:20],
+    }
+
+    return jsonify(
+        {
+            "ok": True,
+            "file_path": normalized_path,
+            "target_count": len(targets),
+            "targets_preview": targets[:20],
+        }
+    )
+
+
+@app.route("/api/export", methods=["GET"])
+def api_export():
+    store = ScanResultStore()
+    domain = normalize_domain(request.args.get("domain"))
+    tool_name = normalize_value(request.args.get("tool"))
+    category = normalize_value(request.args.get("category"))
+    fmt = (request.args.get("format") or "csv").lower()
+    limit = request.args.get("limit", "1000")
+
+    try:
+        limit = max(1, min(int(limit), 5000))
+    except ValueError:
+        limit = 1000
+
+    rows = gather_export_rows(
+        store,
+        domain=domain,
+        tool_name=tool_name,
+        category=category,
+        limit=limit,
+    )
+    path = export_results(rows, fmt=fmt, prefix=domain or "all_results")
+
+    return jsonify(
+        {
+            "ok": True,
+            "path": path,
+            "count": len(rows),
+            "format": fmt,
+        }
+    )
+
+
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=True)
-
-# 无论在 Windows 还是 Linux，都能完美自动适应
-file_path = os.path.join("results", "output.xlsx")

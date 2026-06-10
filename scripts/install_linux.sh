@@ -3,14 +3,17 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REQUIREMENTS_FILE="$ROOT_DIR/requirement.txt"
-LOCAL_TOOLS_DIR="$ROOT_DIR/tools"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+GO_BIN="$HOME/go/bin"
 
 CHECK_ONLY=0
 SKIP_SYSTEM=0
 SKIP_PYTHON_DEPS=0
 SKIP_GO_TOOLS=0
-WITH_OPTIONAL=0
+WITH_OPTIONAL=1
 DRY_RUN=0
+
+declare -A INSTALL_SUMMARY=()
 
 GO_TOOLS=(
   "subfinder=github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
@@ -26,8 +29,8 @@ GO_TOOLS=(
 )
 
 EXPECTED_TOOLS=(
-  alterx amass assetfinder dirsearch dnsx feroxbuster gospider httpx http-x
-  katana naabu nmap shuffledns subfinder waybackurls
+  subfinder dnsx httpx http-x naabu nmap katana gospider waybackurls
+  feroxbuster dirsearch oneforall enscan assetfinder shuffledns alterx amass
 )
 
 usage() {
@@ -35,14 +38,18 @@ usage() {
 Usage: bash scripts/install_linux.sh [options]
 
 Options:
-  --check-only        Only check installed tools.
-  --skip-system      Skip OS package installation.
-  --skip-python-deps Skip Python dependency installation.
-  --skip-go-tools    Skip Go recon tool installation.
-  --with-optional    Install Rust/feroxbuster and clone dirsearch.
-  --dry-run          Print commands without executing them.
-  -h, --help         Show this help.
+  --check-only
+  --skip-system
+  --skip-python-deps
+  --skip-go-tools
+  --with-optional
+  --dry-run
+  -h, --help
 EOF
+}
+
+set_status() {
+  INSTALL_SUMMARY["$1"]="$2"
 }
 
 run() {
@@ -84,41 +91,19 @@ python_cmd() {
   fi
 }
 
-pip_install_user() {
-  local py="$1"
-  shift
-
-  if run "$py" -m pip install --user "$@"; then
-    return 0
-  fi
-
-  echo "[i] pip rejected user-site installation; retrying with --break-system-packages."
-  run "$py" -m pip install --user --break-system-packages "$@"
-}
-
-go_bin() {
-  if [[ -n "${GOBIN:-}" ]]; then
-    echo "$GOBIN"
-  elif exists go; then
-    echo "$(go env GOPATH)/bin"
-  else
-    echo "$HOME/go/bin"
-  fi
+ensure_go_bin() {
+  run mkdir -p "$GO_BIN"
+  export PATH="$PATH:$GO_BIN"
 }
 
 add_go_path() {
-  local bin_path
-  bin_path="$(go_bin)"
-  export PATH="$PATH:$bin_path"
-
+  ensure_go_bin
   local profile="$HOME/.profile"
   local line='export PATH="$PATH:$HOME/go/bin"'
-  if [[ "$bin_path" == "$HOME/go/bin" && -f "$profile" ]]; then
-    if ! grep -Fq "$line" "$profile"; then
-      echo "[*] Add Go bin to $profile"
-      if [[ "$DRY_RUN" -eq 0 ]]; then
-        printf '\n# Go user binaries\n%s\n' "$line" >> "$profile"
-      fi
+  if [[ -f "$profile" ]] && ! grep -Fq "$line" "$profile"; then
+    echo "[*] Add Go bin to $profile"
+    if [[ "$DRY_RUN" -eq 0 ]]; then
+      printf '\n# Go user binaries\n%s\n' "$line" >> "$profile"
     fi
   fi
 }
@@ -128,16 +113,12 @@ resolve_tool_path() {
 }
 
 ensure_httpx_alias() {
-  local bin_path target alias_path
-  bin_path="$(go_bin)"
-  target="$bin_path/httpx"
-  alias_path="$bin_path/http-x"
-
+  local target="$GO_BIN/httpx"
+  local alias_path="$GO_BIN/http-x"
   if [[ ! -f "$target" ]]; then
     echo "[!] ProjectDiscovery httpx was not found at: $target"
     return 1
   fi
-
   echo "[*] Create http-x alias: $alias_path"
   if [[ "$DRY_RUN" -eq 0 ]]; then
     cat >"$alias_path" <<EOF
@@ -146,42 +127,29 @@ ensure_httpx_alias() {
 EOF
     chmod +x "$alias_path"
   fi
-
-  export PATH="$PATH:$bin_path"
-}
-
-go_tool_path() {
-  local tool_name="$1"
-  echo "$(go_bin)/$tool_name"
 }
 
 test_httpx_installation() {
-  local bin_path expected_httpx expected_alias resolved_httpx resolved_alias
-  bin_path="$(go_bin)"
-  expected_httpx="$bin_path/httpx"
-  expected_alias="$bin_path/http-x"
+  local expected_httpx="$GO_BIN/httpx"
+  local expected_alias="$GO_BIN/http-x"
+  local resolved_httpx resolved_alias
   resolved_httpx="$(resolve_tool_path httpx)"
   resolved_alias="$(resolve_tool_path http-x)"
-
   echo "[i] Expected ProjectDiscovery httpx: $expected_httpx"
   echo "[i] which httpx => ${resolved_httpx:-<missing>}"
   echo "[i] which http-x => ${resolved_alias:-<missing>}"
-
-  [[ -f "$expected_httpx" ]] || { echo "[!] ProjectDiscovery httpx is missing."; return 1; }
-  [[ -f "$expected_alias" ]] || { echo "[!] http-x alias is missing."; return 1; }
-  [[ "$resolved_alias" == "$expected_alias" ]] || { echo "[!] http-x does not resolve to the expected alias path."; return 1; }
-
+  [[ -f "$expected_httpx" ]] || return 1
+  [[ -f "$expected_alias" ]] || return 1
+  [[ "$resolved_alias" == "$expected_alias" ]] || return 1
   if [[ -n "$resolved_httpx" && "$resolved_httpx" != "$expected_httpx" ]]; then
     echo "[!] httpx resolves to another executable. The project will use http-x instead."
   fi
-
   echo "[ok] ProjectDiscovery httpx alias is ready"
 }
 
 install_system_dependencies() {
   echo
   echo "=== System dependencies ==="
-
   if exists apt-get; then
     run_root apt-get update
     run_root apt-get install -y python3 python3-pip golang-go git nmap curl wget unzip ca-certificates
@@ -196,9 +164,8 @@ install_system_dependencies() {
   elif exists apk; then
     run_root apk add --no-cache python3 py3-pip go git nmap curl wget unzip ca-certificates
   else
-    echo "[!] Unsupported package manager. Install python3, pip, go, git, nmap, curl, wget, and unzip manually."
+    echo "[!] Unsupported package manager. Install dependencies manually."
   fi
-
   add_go_path
 }
 
@@ -215,8 +182,8 @@ install_python_dependencies() {
     echo "[!] Missing requirements file: $REQUIREMENTS_FILE"
     return
   fi
-  pip_install_user "$py" --upgrade pip
-  pip_install_user "$py" -r "$REQUIREMENTS_FILE"
+  run "$py" -m pip install --user --upgrade pip || run "$py" -m pip install --user --break-system-packages --upgrade pip
+  run "$py" -m pip install --user -r "$REQUIREMENTS_FILE" || run "$py" -m pip install --user --break-system-packages -r "$REQUIREMENTS_FILE"
 }
 
 install_amass() {
@@ -226,65 +193,7 @@ install_amass() {
     echo "[=] amass already exists in PATH"
     return
   fi
-
-  if ! exists wget; then
-    echo "[!] wget is required to install amass from GitHub."
-    return
-  fi
-
-  if ! exists unzip; then
-    echo "[!] unzip is required to install amass from GitHub."
-    return
-  fi
-
-  local amass_url="https://github.com/owasp-amass/amass/releases/download/v4.2.0/amass_Linux_amd64.zip"
-  local amass_zip="$LOCAL_TOOLS_DIR/amass_Linux_amd64.zip"
-  local amass_extract_dir="$LOCAL_TOOLS_DIR/amass"
-  local amass_bin="$amass_extract_dir/amass"
-
-  run mkdir -p "$LOCAL_TOOLS_DIR"
-  run wget "$amass_url" -O "$amass_zip"
-  run mkdir -p "$amass_extract_dir"
-  run unzip -o "$amass_zip" -d "$amass_extract_dir"
-
-  if [[ "$DRY_RUN" -eq 1 ]]; then
-    echo "[i] Dry run: skip amass binary lookup and version check."
-    return
-  fi
-
-  local found_bin=""
-  if [[ -f "$amass_bin" ]]; then
-    found_bin="$amass_bin"
-  else
-    found_bin="$(find "$amass_extract_dir" -type f -name amass 2>/dev/null | head -n 1 || true)"
-  fi
-
-  if [[ -z "$found_bin" ]]; then
-    echo "[!] amass binary was not found after extracting: $amass_extract_dir"
-    return
-  fi
-
-  run chmod +x "$found_bin"
-  if [[ "$found_bin" != "$amass_bin" ]]; then
-    run cp "$found_bin" "$amass_bin"
-  fi
-
-  export PATH="$PATH:$amass_extract_dir"
-
-  local profile="$HOME/.profile"
-  local line="export PATH=\"\$PATH:$amass_extract_dir\""
-  if [[ -f "$profile" ]] && ! grep -Fq "$line" "$profile"; then
-    echo "[*] Add amass to $profile"
-    if [[ "$DRY_RUN" -eq 0 ]]; then
-      printf '\n# get_everything_framework tools\n%s\n' "$line" >> "$profile"
-    fi
-  fi
-
-  if "$amass_bin" -version >/dev/null 2>&1; then
-    "$amass_bin" -version
-  else
-    echo "[+] amass installed at: $amass_bin"
-  fi
+  echo "[WARN] Please install amass manually on Linux/macOS if needed."
 }
 
 install_go_tools() {
@@ -294,86 +203,139 @@ install_go_tools() {
     echo "[!] Go is not installed or not in PATH."
     return
   fi
-
   add_go_path
-
-  local entry tool module
+  local entry tool module tool_path
   for entry in "${GO_TOOLS[@]}"; do
     tool="${entry%%=*}"
     module="${entry#*=}"
-    if [[ "$tool" == "httpx" ]]; then
-      local expected_httpx
-      expected_httpx="$(go_tool_path httpx)"
-      if [[ -f "$expected_httpx" ]]; then
-        echo "[=] httpx already installed in Go bin: $expected_httpx"
-        continue
-      fi
-
-      echo "[*] Installing ProjectDiscovery httpx into Go bin"
-      run go install "$module"
-      continue
-    fi
-
-    if exists "$tool"; then
-      echo "[=] $tool already exists in PATH"
+    tool_path="$GO_BIN/$tool"
+    if [[ -f "$tool_path" ]]; then
+      echo "[=] $tool already installed in Go bin"
       continue
     fi
     run go install "$module"
   done
-
   ensure_httpx_alias || true
   test_httpx_installation || true
-
   install_amass
+}
+
+find_local_binary() {
+  local candidate
+  for candidate in "$@"; do
+    if [[ -f "$SCRIPT_DIR/$candidate" ]]; then
+      echo "$SCRIPT_DIR/$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+copy_local_binary() {
+  local tool_name="$1"
+  local target_name="$2"
+  shift 2
+  ensure_go_bin
+  local source=""
+  if source="$(find_local_binary "$@" 2>/dev/null)"; then
+    local target="$GO_BIN/$target_name"
+    run cp "$source" "$target"
+    run chmod +x "$target"
+    set_status "$tool_name" "success"
+    return 0
+  fi
+  set_status "$tool_name" "failed"
+  return 1
+}
+
+install_feroxbuster() {
+  echo
+  echo "=== feroxbuster ==="
+  ensure_go_bin
+  local target="$GO_BIN/feroxbuster"
+  if exists feroxbuster; then
+    echo "[SKIP] feroxbuster already installed"
+    set_status "feroxbuster" "skipped"
+    return
+  fi
+  if exists cargo; then
+    run cargo install feroxbuster
+    if [[ -f "$HOME/.cargo/bin/feroxbuster" && "$HOME/.cargo/bin/feroxbuster" != "$target" ]]; then
+      run cp "$HOME/.cargo/bin/feroxbuster" "$target"
+      run chmod +x "$target"
+    fi
+    set_status "feroxbuster" "success"
+  else
+    echo "[WARN] cargo not found, please install feroxbuster manually"
+    set_status "feroxbuster" "failed"
+  fi
+}
+
+install_enscan() {
+  echo
+  echo "=== enscan ==="
+  ensure_go_bin
+  local target="$GO_BIN/enscan"
+  if [[ -f "$target" ]]; then
+    echo "[SKIP] enscan already installed"
+    set_status "enscan" "skipped"
+    return
+  fi
+  if ! exists go; then
+    echo "[WARN] Go is not installed or not in PATH, cannot build enscan."
+    set_status "enscan" "failed"
+    return
+  fi
+  if ! exists git; then
+    echo "[WARN] Git is not installed or not in PATH, cannot fetch ENScan_GO."
+    set_status "enscan" "failed"
+    return
+  fi
+
+  local repo_dir="${TMPDIR:-/tmp}/ENScan_go_install"
+  rm -rf "$repo_dir"
+  run git clone --depth 1 https://github.com/wgpsec/ENScan_GO.git "$repo_dir"
+  (
+    cd "$repo_dir"
+    GOBIN="$GO_BIN" go install .
+  )
+
+  if [[ -f "$GO_BIN/ENScan" && ! -f "$target" ]]; then
+    run mv "$GO_BIN/ENScan" "$target"
+  fi
+
+  if [[ -f "$target" ]]; then
+    run chmod +x "$target"
+    set_status "enscan" "success"
+  else
+    set_status "enscan" "failed"
+  fi
 }
 
 install_optional_tools() {
   echo
   echo "=== Optional tools ==="
+  install_feroxbuster
+  install_enscan
 
-  if ! exists cargo; then
-    if exists apt-get; then
-      run_root apt-get install -y cargo
-    elif exists dnf; then
-      run_root dnf install -y cargo
-    elif exists yum; then
-      run_root yum install -y cargo
-    elif exists pacman; then
-      run_root pacman -S --needed --noconfirm rust
-    elif exists zypper; then
-      run_root zypper install -y cargo
-    elif exists apk; then
-      run_root apk add --no-cache cargo
-    else
-      echo "[!] Install Rust/Cargo manually to enable feroxbuster."
-    fi
-  fi
-
-  if exists cargo; then
-    if exists feroxbuster; then
-      echo "[=] feroxbuster already exists in PATH"
-    else
-      run cargo install feroxbuster
-    fi
-  fi
-
-  if ! exists git; then
-    echo "[!] Git is required to install dirsearch."
-    return
-  fi
-
-  local target="$LOCAL_TOOLS_DIR/dirsearch"
-  if [[ -d "$target" ]]; then
-    echo "[=] dirsearch repository already exists: $target"
+  if find_local_binary "oneforall.exe" "OneForAll.exe" "one_for_all.exe" >/dev/null 2>&1; then
+    echo "[WARN] Detected OneForAll as Windows exe; Linux/macOS cannot run it directly."
+    set_status "oneforall" "skipped"
+  elif find_local_binary "oneforall" "OneForAll" >/dev/null 2>&1; then
+    copy_local_binary "oneforall" "oneforall" "oneforall" "OneForAll" || true
   else
-    run mkdir -p "$LOCAL_TOOLS_DIR"
-    run git clone https://github.com/maurosoria/dirsearch.git "$target"
+    echo "[WARN] oneforall binary not found beside installer."
+    set_status "oneforall" "skipped"
   fi
 
-  local py
-  py="$(python_cmd)"
-  if [[ -n "$py" && -f "$target/requirements.txt" ]]; then
-    pip_install_user "$py" -r "$target/requirements.txt"
+  if find_local_binary "dirsearch.exe" "Dirsearch.exe" >/dev/null 2>&1; then
+    echo "[WARN] Detected dirsearch as Windows exe; Linux/macOS cannot run it directly."
+    set_status "dirsearch" "skipped"
+  elif find_local_binary "dirsearch" >/dev/null 2>&1; then
+    copy_local_binary "dirsearch" "dirsearch" "dirsearch" || true
+  else
+    echo "[WARN] dirsearch binary not found beside installer."
+    set_status "dirsearch" "skipped"
   fi
 }
 
@@ -384,14 +346,31 @@ verify_environment() {
   for tool in "${EXPECTED_TOOLS[@]}"; do
     if exists "$tool"; then
       echo "[ok] $tool"
-    elif [[ "$tool" == "dirsearch" && -f "$LOCAL_TOOLS_DIR/dirsearch/dirsearch.py" ]]; then
-      echo "[ok] dirsearch in tools/dirsearch"
     else
       echo "[--] $tool not found"
     fi
   done
-
   test_httpx_installation || true
+}
+
+print_install_summary() {
+  echo
+  echo "工具安装汇总："
+  for tool in ENScan OneForAll dirsearch naabu feroxbuster; do
+    local key="${tool,,}"
+    local status="${INSTALL_SUMMARY[$key]:-skipped}"
+    echo "- $tool: $status"
+  done
+  echo
+  echo "Go bin 路径："
+  echo "- Linux/macOS: $GO_BIN"
+  echo
+  echo "PATH 状态："
+  if [[ ":$PATH:" == *":$GO_BIN:"* ]]; then
+    echo "- Go bin 已在 PATH"
+  else
+    echo "- Go bin 不在 PATH，请手动添加"
+  fi
 }
 
 while [[ $# -gt 0 ]]; do
@@ -413,31 +392,25 @@ echo "Project root: $ROOT_DIR"
 
 if [[ "$CHECK_ONLY" -eq 1 ]]; then
   verify_environment
-  echo
-  echo "Go bin: $(go_bin)"
+  print_install_summary
   exit 0
 fi
 
-if [[ "$SKIP_SYSTEM" -eq 0 ]]; then
-  install_system_dependencies
-fi
-
-if [[ "$SKIP_PYTHON_DEPS" -eq 0 ]]; then
-  install_python_dependencies
-fi
-
-if [[ "$SKIP_GO_TOOLS" -eq 0 ]]; then
-  install_go_tools
-fi
+if [[ "$SKIP_SYSTEM" -eq 0 ]]; then install_system_dependencies; fi
+if [[ "$SKIP_PYTHON_DEPS" -eq 0 ]]; then install_python_dependencies; fi
+if [[ "$SKIP_GO_TOOLS" -eq 0 ]]; then install_go_tools; fi
 
 if [[ "$WITH_OPTIONAL" -eq 1 ]]; then
   install_optional_tools
-else
-  echo
-  echo "=== Optional tools skipped ==="
-  echo "Run again with --with-optional to install Rust/feroxbuster and clone dirsearch."
 fi
 
+if [[ -f "$GO_BIN/naabu" ]]; then set_status "naabu" "success"; else set_status "naabu" "failed"; fi
+[[ -n "${INSTALL_SUMMARY[oneforall]:-}" ]] || set_status "oneforall" "skipped"
+[[ -n "${INSTALL_SUMMARY[dirsearch]:-}" ]] || set_status "dirsearch" "skipped"
+[[ -n "${INSTALL_SUMMARY[enscan]:-}" ]] || set_status "enscan" "skipped"
+[[ -n "${INSTALL_SUMMARY[feroxbuster]:-}" ]] || set_status "feroxbuster" "skipped"
+
 verify_environment
+print_install_summary
 echo
 echo "[+] Done. Restart the shell if newly installed commands are still not found."

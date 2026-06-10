@@ -11,7 +11,9 @@ $ErrorActionPreference = "Stop"
 
 $RootDir = Resolve-Path (Join-Path $PSScriptRoot "..")
 $RequirementsFile = Join-Path $RootDir "requirement.txt"
-$LocalToolsDir = Join-Path $RootDir "tools"
+$ScriptDir = $PSScriptRoot
+$GoBin = Join-Path $env:USERPROFILE "go\bin"
+$InstallSummary = [ordered]@{}
 
 $WingetPackages = [ordered]@{
     "python" = "Python.Python.3"
@@ -21,58 +23,47 @@ $WingetPackages = [ordered]@{
 }
 
 $GoTools = [ordered]@{
-    "subfinder" = "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
-    "shuffledns" = "github.com/projectdiscovery/shuffledns/cmd/shuffledns@latest"
-    "alterx" = "github.com/projectdiscovery/alterx/cmd/alterx@latest"
-    "gospider" = "github.com/jaeles-project/gospider@latest"
-    "dnsx" = "github.com/projectdiscovery/dnsx/cmd/dnsx@latest"
-    "httpx" = "github.com/projectdiscovery/httpx/cmd/httpx@latest"
-    "naabu" = "github.com/projectdiscovery/naabu/v2/cmd/naabu@latest"
+    "subfinder"   = "github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest"
+    "shuffledns"  = "github.com/projectdiscovery/shuffledns/cmd/shuffledns@latest"
+    "alterx"      = "github.com/projectdiscovery/alterx/cmd/alterx@latest"
+    "gospider"    = "github.com/jaeles-project/gospider@latest"
+    "dnsx"        = "github.com/projectdiscovery/dnsx/cmd/dnsx@latest"
+    "httpx"       = "github.com/projectdiscovery/httpx/cmd/httpx@latest"
+    "naabu"       = "github.com/projectdiscovery/naabu/v2/cmd/naabu@latest"
     "waybackurls" = "github.com/tomnomnom/waybackurls@latest"
-    "katana" = "github.com/projectdiscovery/katana/cmd/katana@latest"
+    "katana"      = "github.com/projectdiscovery/katana/cmd/katana@latest"
     "assetfinder" = "github.com/tomnomnom/assetfinder@latest"
 }
 
 $ExpectedTools = @(
-    "alterx", "amass", "assetfinder", "dirsearch", "dnsx", "feroxbuster",
-    "gospider", "httpx", "http-x", "katana", "naabu", "nmap", "shuffledns",
-    "subfinder", "waybackurls"
+    "subfinder", "dnsx", "httpx", "http-x", "naabu", "nmap", "katana", "gospider",
+    "waybackurls", "feroxbuster", "dirsearch", "oneforall", "enscan", "assetfinder",
+    "shuffledns", "alterx", "amass"
 )
+
+function Set-ToolStatus {
+    param([string]$Name, [string]$Status)
+    $InstallSummary[$Name.ToLower()] = $Status
+}
 
 function Test-Command {
     param([string]$Name)
     return $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
-function Invoke-CommandStep {
+function Invoke-NativeCommand {
     param([string[]]$Command)
     Write-Host "[*] $($Command -join ' ')"
+    if ($DryRun) {
+        return
+    }
+    & $Command[0] @($Command[1..($Command.Count - 1)])
+}
+
+function Ensure-GoBin {
     if (-not $DryRun) {
-        & $Command[0] @($Command[1..($Command.Count - 1)])
+        New-Item -ItemType Directory -Path $GoBin -Force | Out-Null
     }
-}
-
-function Get-PythonCommand {
-    if (Test-Command "py") {
-        return "py"
-    }
-    if (Test-Command "python") {
-        return "python"
-    }
-    return $null
-}
-
-function Get-GoBin {
-    if ($env:GOBIN) {
-        return $env:GOBIN
-    }
-    if (Test-Command "go") {
-        $goPath = (& go env GOPATH 2>$null)
-        if ($goPath) {
-            return Join-Path $goPath "bin"
-        }
-    }
-    return Join-Path $HOME "go\bin"
 }
 
 function Add-UserPath {
@@ -113,10 +104,15 @@ function Resolve-ToolPath {
     return $null
 }
 
+function Get-PythonCommand {
+    if (Test-Command "py") { return "py" }
+    if (Test-Command "python") { return "python" }
+    return $null
+}
+
 function Ensure-HttpxAlias {
-    $goBin = Get-GoBin
-    $target = Join-Path $goBin "httpx.exe"
-    $aliasPath = Join-Path $goBin "http-x.cmd"
+    $target = Join-Path $GoBin "httpx.exe"
+    $aliasPath = Join-Path $GoBin "http-x.cmd"
 
     if (-not (Test-Path $target)) {
         Write-Host "[!] ProjectDiscovery httpx.exe not found at: $target"
@@ -130,20 +126,11 @@ function Ensure-HttpxAlias {
             "`"$target`" %*"
         ) | Set-Content -Path $aliasPath -Encoding ASCII
     }
-
-    Add-UserPath $goBin
-    Update-ProcessPathFromRegistry
-}
-
-function Get-GoToolExecutablePath {
-    param([string]$ToolName)
-    return Join-Path (Get-GoBin) ($ToolName + ".exe")
 }
 
 function Test-HttpxInstallation {
-    $goBin = Get-GoBin
-    $expectedHttpx = Join-Path $goBin "httpx.exe"
-    $expectedAlias = Join-Path $goBin "http-x.cmd"
+    $expectedHttpx = Join-Path $GoBin "httpx.exe"
+    $expectedAlias = Join-Path $GoBin "http-x.cmd"
     $resolvedHttpx = Resolve-ToolPath "httpx"
     $resolvedAlias = Resolve-ToolPath "http-x"
 
@@ -151,18 +138,10 @@ function Test-HttpxInstallation {
     Write-Host "[i] where httpx => $resolvedHttpx"
     Write-Host "[i] where http-x => $resolvedAlias"
 
-    if (-not (Test-Path $expectedHttpx)) {
-        Write-Host "[!] ProjectDiscovery httpx.exe is missing."
-        return $false
-    }
-    if (-not (Test-Path $expectedAlias)) {
-        Write-Host "[!] http-x alias is missing."
-        return $false
-    }
-    if ($resolvedAlias -ne $expectedAlias) {
-        Write-Host "[!] http-x does not resolve to the expected alias path."
-        return $false
-    }
+    if (-not (Test-Path $expectedHttpx)) { return $false }
+    if (-not (Test-Path $expectedAlias)) { return $false }
+    if ($resolvedAlias -ne $expectedAlias) { return $false }
+
     if ($resolvedHttpx -and ($resolvedHttpx -ne $expectedHttpx)) {
         Write-Host "[!] httpx resolves to another executable. The project will use http-x instead."
     }
@@ -172,10 +151,7 @@ function Test-HttpxInstallation {
 }
 
 function Install-WingetPackage {
-    param(
-        [string]$CommandName,
-        [string]$PackageId
-    )
+    param([string]$CommandName, [string]$PackageId)
 
     if (Test-Command $CommandName) {
         Write-Host "[=] $CommandName already exists in PATH"
@@ -183,19 +159,18 @@ function Install-WingetPackage {
     }
 
     if (-not (Test-Command "winget")) {
-        Write-Host "[!] winget is not available. Install $CommandName manually, then rerun this script."
+        Write-Host "[!] winget is not available. Install $CommandName manually."
         return
     }
 
-    Invoke-CommandStep @(
+    Invoke-NativeCommand @(
         "winget", "install", "--id", $PackageId, "-e",
         "--accept-source-agreements", "--accept-package-agreements"
     )
 }
 
 function Install-SystemDependencies {
-    Write-Host ""
-    Write-Host "=== System dependencies ==="
+    Write-Host "`n=== System dependencies ==="
     foreach ($name in $WingetPackages.Keys) {
         Install-WingetPackage $name $WingetPackages[$name]
     }
@@ -204,17 +179,12 @@ function Install-SystemDependencies {
     $goInstallDir = Join-Path $env:ProgramFiles "Go\bin"
     if (Test-Path $goInstallDir) {
         Add-UserPath $goInstallDir
-        Update-ProcessPathFromRegistry
     }
-
-    if (Test-Command "go") {
-        Add-UserPath (Get-GoBin)
-    }
+    Add-UserPath $GoBin
 }
 
 function Install-PythonDependencies {
-    Write-Host ""
-    Write-Host "=== Python dependencies ==="
+    Write-Host "`n=== Python dependencies ==="
     $python = Get-PythonCommand
     if (-not $python) {
         Write-Host "[!] Python is not installed or not in PATH."
@@ -224,144 +194,241 @@ function Install-PythonDependencies {
         Write-Host "[!] Missing requirements file: $RequirementsFile"
         return
     }
-    Invoke-CommandStep @($python, "-m", "pip", "install", "--upgrade", "pip")
-    Invoke-CommandStep @($python, "-m", "pip", "install", "-r", $RequirementsFile)
+
+    Invoke-NativeCommand @($python, "-m", "pip", "install", "--upgrade", "pip")
+    Invoke-NativeCommand @($python, "-m", "pip", "install", "-r", $RequirementsFile)
 }
 
 function Install-Amass {
-    Write-Host ""
-    Write-Host "=== amass ==="
+    Write-Host "`n=== amass ==="
     if (Test-Command "amass") {
         Write-Host "[=] amass already exists in PATH"
         return
     }
 
     if (Test-Command "winget") {
-        Invoke-CommandStep @(
+        Invoke-NativeCommand @(
             "winget", "install", "--id", "OWASP.Amass", "-e",
             "--accept-source-agreements", "--accept-package-agreements"
         )
     } else {
-        Write-Host "[!] winget is not available. Install amass from https://github.com/owasp-amass/amass/releases"
+        Write-Host "[!] Install amass manually from GitHub Releases."
     }
 }
 
 function Install-GoTools {
-    Write-Host ""
-    Write-Host "=== Go tools ==="
+    Write-Host "`n=== Go tools ==="
     if (-not (Test-Command "go")) {
         Write-Host "[!] Go is not installed or not in PATH."
         return
     }
 
-    Add-UserPath (Get-GoBin)
+    Ensure-GoBin
+    Add-UserPath $GoBin
+
     foreach ($tool in $GoTools.Keys) {
-        if ($tool -eq "httpx") {
-            $expectedHttpx = Get-GoToolExecutablePath "httpx"
-            if (Test-Path $expectedHttpx) {
-                Write-Host "[=] httpx already installed in Go bin: $expectedHttpx"
-                continue
-            }
-
-            Write-Host "[*] Installing ProjectDiscovery httpx into Go bin"
-            Invoke-CommandStep @("go", "install", $GoTools[$tool])
+        $exePath = Join-Path $GoBin ($tool + ".exe")
+        if (($tool -ne "httpx") -and (Test-Path $exePath)) {
+            Write-Host "[=] $tool already installed in Go bin"
             continue
         }
-
-        if (Test-Command $tool) {
-            Write-Host "[=] $tool already exists in PATH"
+        if (($tool -eq "httpx") -and (Test-Path (Join-Path $GoBin "httpx.exe"))) {
+            Write-Host "[=] httpx already installed in Go bin"
             continue
         }
-        Invoke-CommandStep @("go", "install", $GoTools[$tool])
+        Invoke-NativeCommand @("go", "install", $GoTools[$tool])
     }
 
     Ensure-HttpxAlias
     Test-HttpxInstallation | Out-Null
-
     Install-Amass
 }
 
-function Install-Feroxbuster {
-    Write-Host ""
-    Write-Host "=== feroxbuster ==="
-    if (Test-Command "feroxbuster") {
-        Write-Host "[=] feroxbuster already exists in PATH"
+function Find-LocalBinary {
+    param([string[]]$Names)
+    foreach ($name in $Names) {
+        $candidate = Join-Path $ScriptDir $name
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+    return $null
+}
+
+function Copy-LocalBinary {
+    param(
+        [string]$ToolName,
+        [string[]]$SourceNames,
+        [string]$TargetFileName,
+        [string]$HelpArg = "-h"
+    )
+
+    Ensure-GoBin
+    $source = Find-LocalBinary -Names $SourceNames
+    if (-not $source) {
+        Write-Host "[WARN] $ToolName binary not found beside installer."
+        Set-ToolStatus $ToolName "failed"
         return
     }
 
-    $targetDir = Join-Path $LocalToolsDir "feroxbuster"
-    $zipPath = Join-Path $LocalToolsDir "feroxbuster.zip"
-    $downloadUrl = "https://github.com/epi052/feroxbuster/releases/latest/download/x86_64-windows-feroxbuster.exe.zip"
+    $target = Join-Path $GoBin $TargetFileName
+    Write-Host "[*] Copy $source -> $target"
+    if (-not $DryRun) {
+        Copy-Item $source $target -Force
+    }
+
+    if ($DryRun -or (Test-Path $target)) {
+        if (-not $DryRun) {
+            try {
+                & $target $HelpArg *> $null
+            } catch {
+                Write-Host "[WARN] $ToolName exists but help command is not supported."
+            }
+        }
+        Set-ToolStatus $ToolName "success"
+    } else {
+        Set-ToolStatus $ToolName "failed"
+    }
+}
+
+function Install-Feroxbuster {
+    Write-Host "`n=== feroxbuster ==="
+    Ensure-GoBin
+
+    $FeroxUrl = "https://github.com/epi052/feroxbuster/releases/download/v2.13.1/x86-windows-feroxbuster.exe.zip"
+    $TempZip = Join-Path $env:TEMP "feroxbuster.zip"
+    $TempDir = Join-Path $env:TEMP "feroxbuster_extract"
+    $FeroxTarget = Join-Path $GoBin "feroxbuster.exe"
+
+    if (Test-Path $FeroxTarget) {
+        Write-Host "[=] feroxbuster already installed"
+        Set-ToolStatus "feroxbuster" "skipped"
+        return
+    }
 
     if (-not $DryRun) {
-        New-Item -ItemType Directory -Force -Path $LocalToolsDir | Out-Null
-    }
-
-    Invoke-CommandStep @("Invoke-WebRequest", $downloadUrl, "-OutFile", $zipPath)
-    Invoke-CommandStep @("Expand-Archive", $zipPath, "-DestinationPath", $targetDir, "-Force")
-
-    $exePath = Join-Path $targetDir "feroxbuster.exe"
-    if ((-not $DryRun) -and (-not (Test-Path $exePath))) {
-        $foundExe = Get-ChildItem -Path $targetDir -Recurse -Filter "feroxbuster.exe" -File |
-            Select-Object -First 1
-        if ($foundExe) {
-            Copy-Item -Path $foundExe.FullName -Destination $exePath -Force
+        Invoke-WebRequest -Uri $FeroxUrl -OutFile $TempZip
+        if (Test-Path $TempDir) {
+            Remove-Item $TempDir -Recurse -Force
         }
+        New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
+        Expand-Archive -Path $TempZip -DestinationPath $TempDir -Force
+        $FeroxExe = Get-ChildItem -Path $TempDir -Recurse -Filter "feroxbuster.exe" | Select-Object -First 1
+        if ($FeroxExe) {
+            Copy-Item $FeroxExe.FullName $FeroxTarget -Force
+            Write-Host "[OK] feroxbuster copied to $FeroxTarget"
+        } else {
+            Write-Host "[WARN] feroxbuster.exe not found after extraction"
+        }
+    } else {
+        Write-Host "[*] Dry run download: $FeroxUrl"
     }
 
-    Add-UserPath $targetDir
-
-    if ($DryRun) {
-        Write-Host "[i] Dry run: skip feroxbuster.exe version check."
-    } elseif (Test-Path $exePath) {
-        Invoke-CommandStep @($exePath, "-V")
+    if ($DryRun -or (Test-Path $FeroxTarget)) {
+        if (-not $DryRun) {
+            try { & $FeroxTarget --version *> $null } catch { try { & $FeroxTarget -h *> $null } catch {} }
+        }
+        Set-ToolStatus "feroxbuster" "success"
     } else {
-        Write-Host "[!] feroxbuster.exe was not found after extraction: $targetDir"
+        Set-ToolStatus "feroxbuster" "failed"
+    }
+}
+
+function Install-ENScan {
+    Write-Host "`n=== enscan ==="
+    Ensure-GoBin
+
+    $target = Join-Path $GoBin "enscan.exe"
+    if (Test-Path $target) {
+        Write-Host "[=] enscan already installed"
+        Set-ToolStatus "enscan" "skipped"
+        return
+    }
+
+    if (-not (Test-Command "go")) {
+        Write-Host "[WARN] Go is not installed or not in PATH, cannot build enscan."
+        Set-ToolStatus "enscan" "failed"
+        return
+    }
+
+    if (-not (Test-Command "git")) {
+        Write-Host "[WARN] Git is not installed or not in PATH, cannot fetch ENScan_GO."
+        Set-ToolStatus "enscan" "failed"
+        return
+    }
+
+    $repoDir = Join-Path $env:TEMP "ENScan_go_install"
+    if (-not $DryRun) {
+        if (Test-Path $repoDir) {
+            Remove-Item $repoDir -Recurse -Force
+        }
+        Invoke-NativeCommand @("git", "clone", "--depth", "1", "https://github.com/wgpsec/ENScan_GO.git", $repoDir)
+        Push-Location $repoDir
+        try {
+            $oldGobin = $env:GOBIN
+            $env:GOBIN = $GoBin
+            Invoke-NativeCommand @("go", "install", ".")
+        } finally {
+            $env:GOBIN = $oldGobin
+            Pop-Location
+        }
+
+        $builtExe = Join-Path $GoBin "ENScan.exe"
+        if ((Test-Path $builtExe) -and (-not (Test-Path $target))) {
+            Move-Item $builtExe $target -Force
+        }
+    } else {
+        Write-Host "[*] Dry run clone/build: https://github.com/wgpsec/ENScan_GO.git"
+    }
+
+    if ($DryRun -or (Test-Path $target)) {
+        if (-not $DryRun) {
+            try { & $target -h *> $null } catch { try { & $target -v *> $null } catch {} }
+        }
+        Set-ToolStatus "enscan" "success"
+    } else {
+        Set-ToolStatus "enscan" "failed"
     }
 }
 
 function Install-OptionalTools {
-    Write-Host ""
-    Write-Host "=== Optional tools ==="
-
+    Write-Host "`n=== Optional tools ==="
     Install-Feroxbuster
-
-    if (-not (Test-Command "git")) {
-        Write-Host "[!] Git is required to install dirsearch."
-        return
-    }
-
-    $target = Join-Path $LocalToolsDir "dirsearch"
-    if (Test-Path $target) {
-        Write-Host "[=] dirsearch repository already exists: $target"
-    } else {
-        if (-not $DryRun) {
-            New-Item -ItemType Directory -Force -Path $LocalToolsDir | Out-Null
-        }
-        Invoke-CommandStep @("git", "clone", "https://github.com/maurosoria/dirsearch.git", $target)
-    }
-
-    $python = Get-PythonCommand
-    $requirements = Join-Path $target "requirements.txt"
-    if ($python -and (Test-Path $requirements)) {
-        Invoke-CommandStep @($python, "-m", "pip", "install", "-r", $requirements)
-    }
+    Copy-LocalBinary -ToolName "dirsearch" -SourceNames @("dirsearch.exe", "Dirsearch.exe") -TargetFileName "dirsearch.exe"
+    Copy-LocalBinary -ToolName "oneforall" -SourceNames @("oneforall.exe", "OneForAll.exe", "one_for_all.exe") -TargetFileName "oneforall.exe"
+    Install-ENScan
 }
 
 function Test-Environment {
-    Write-Host ""
-    Write-Host "=== Verification ==="
+    Write-Host "`n=== Verification ==="
     foreach ($tool in $ExpectedTools) {
         if (Test-Command $tool) {
             Write-Host "[ok] $tool"
-        } elseif ($tool -eq "dirsearch" -and (Test-Path (Join-Path $LocalToolsDir "dirsearch\dirsearch.py"))) {
-            Write-Host "[ok] dirsearch in tools\dirsearch"
         } else {
             Write-Host "[--] $tool not found"
         }
     }
-
     Test-HttpxInstallation | Out-Null
+}
+
+function Print-InstallSummary {
+    Write-Host "`nTool install summary:"
+    foreach ($tool in @("ENScan", "OneForAll", "dirsearch", "naabu", "feroxbuster")) {
+        $key = $tool.ToLower()
+        $status = if ($InstallSummary.Contains($key)) { $InstallSummary[$key] } else { "skipped" }
+        Write-Host ("- {0}: {1}" -f $tool, $status)
+    }
+
+    Write-Host "`nGo bin path:"
+    Write-Host ("- Windows: {0}" -f $GoBin)
+
+    Write-Host "`nPATH status:"
+    $processPath = [Environment]::GetEnvironmentVariable("PATH", "Process")
+    if (($processPath -split ";") -contains $GoBin) {
+        Write-Host "- Go bin is already in PATH"
+    } else {
+        Write-Host "- Go bin is not in PATH. Please add it manually."
+    }
 }
 
 Write-Host "get_everything_framework Windows installer"
@@ -369,31 +436,22 @@ Write-Host "Project root: $RootDir"
 
 if ($CheckOnly) {
     Test-Environment
-    Write-Host ""
-    Write-Host "Go bin: $(Get-GoBin)"
+    Print-InstallSummary
     exit 0
 }
 
-if (-not $SkipSystem) {
-    Install-SystemDependencies
-}
+if (-not $SkipSystem) { Install-SystemDependencies }
+if (-not $SkipPythonDeps) { Install-PythonDependencies }
+if (-not $SkipGoTools) { Install-GoTools }
 
-if (-not $SkipPythonDeps) {
-    Install-PythonDependencies
-}
+Install-OptionalTools
 
-if (-not $SkipGoTools) {
-    Install-GoTools
-}
-
-if ($WithOptional) {
-    Install-OptionalTools
-} else {
-    Write-Host ""
-    Write-Host "=== Optional tools skipped ==="
-    Write-Host "Run again with -WithOptional to install feroxbuster and clone dirsearch."
-}
+if (Test-Path (Join-Path $GoBin "naabu.exe")) { Set-ToolStatus "naabu" "success" } else { Set-ToolStatus "naabu" "failed" }
+if (-not $InstallSummary.Contains("oneforall")) { Set-ToolStatus "oneforall" "skipped" }
+if (-not $InstallSummary.Contains("dirsearch")) { Set-ToolStatus "dirsearch" "skipped" }
+if (-not $InstallSummary.Contains("enscan")) { Set-ToolStatus "enscan" "skipped" }
+if (-not $InstallSummary.Contains("feroxbuster")) { Set-ToolStatus "feroxbuster" "skipped" }
 
 Test-Environment
-Write-Host ""
-Write-Host "[+] Done. Reopen PowerShell if newly installed commands are still not found."
+Print-InstallSummary
+Write-Host "`n[+] Done. Reopen PowerShell if newly installed commands are still not found."
