@@ -44,6 +44,8 @@ class BaseRunner:
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self.config.get("process_timeout"),
             )
             return True
@@ -67,6 +69,8 @@ class BaseRunner:
                 check=True,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self.config.get("process_timeout"),
             )
             with open(output_file, "w", encoding="utf-8") as f:
