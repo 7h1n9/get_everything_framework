@@ -1,0 +1,15 @@
+# Dirsearch started at 2026-06-12 22:50:37 as: C:\Users\Great\go\bin\dirsearch.EXE -u https://cfpnist.shop -o D:\c4\v2\backend\framework-main\results\1e07bed0e0cc_dirsearch.txt
+
+301   162B https://cfpnist.shop/%2e%2e;/test  ->  https://www.cfpnist.shop/%2E%2E;/test
+
+301   162B https://cfpnist.shop/%3f/  ->  https://www.cfpnist.shop/%3F/
+
+301   162B https://cfpnist.shop/%ff  ->  https://www.cfpnist.shop/%FF
+
+404    9KB https://cfpnist.shop/.well-known/acme-challenge/dtfy
+
+301   162B https://cfpnist.shop/a%5c.aspx  ->  https://www.cfpnist.shop/a%5C.aspx
+
+301   162B https://cfpnist.shop/admin/%3bindex/  ->  https://www.cfpnist.shop/admin/%3Bindex/
+
+301   162B https://cfpnist.shop/login.wdm%2e  ->  https://www.cfpnist.shop/login.wdm%2E
